@@ -618,11 +618,7 @@ accelerate launch --num_processes 8 --mixed_precision bf16 train.py --config_fil
 | AllEval 混合微调 | `bash scripts/run_finetune_alleval_bridge.sh` |
 | AutoML 超参搜索 | `bash run_automl.sh` |
 | AllEval AutoML | `bash scripts/run_automl_alleval.sh` |
-| 恢复中断 Trial | `bash resume_trial.sh 001` |
-| 补评 VLM 分数 | `python rescore_missing.py --vlm_model ...` |
 | CLI 推理 | `python app_cli.py --checkpoint_path ... --prompt ...` |
 | Web UI | `python app.py --checkpoint_path ...` |
 | 批量推理报告 | `python batch_inference.py --checkpoint_path ... --test_dir ...` |
-| 全帧并行推理 | `bash run_infer_all.sh` |
-| 视频三联拼接 | `python merge_triplet_videos.py --dir_a ... --dir_b ... --dir_c ... --output_dir ...` |
 | 数据集验证 | `python verify_datasets.py` |
