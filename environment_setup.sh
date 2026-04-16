@@ -14,4 +14,4 @@ fi
 
 conda install ffmpeg=7.1.1 -c conda-forge -y
 
-pip install -r requirements.txt
+pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/

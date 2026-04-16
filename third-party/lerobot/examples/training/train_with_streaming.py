@@ -45,7 +45,7 @@ def main():
     print(f"Using device: {device}")
 
     training_steps = 10
-    log_freq = 1
+    log_freq = 100
 
     dataset_id = "lerobot/droid_1.0.1"  # 26M frames! Would require 4TB of disk space if installed locally (:
     dataset_metadata = LeRobotDatasetMetadata(dataset_id)

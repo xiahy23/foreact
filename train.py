@@ -10,6 +10,7 @@ from accelerate.utils import release_memory
 from dataclasses import dataclass, field
 from transformers import Trainer
 from transformers.trainer_utils import get_last_checkpoint
+from torchvision.transforms.functional import to_pil_image
 from PIL import PngImagePlugin
 
 from dataloaders.dataset_finetune import get_train_datasets
@@ -54,6 +55,12 @@ class DataArguments:
     data_path: str = "data/realworld"
     camera_key: str = "observation.images.head_left_rgb"
     target_image_size: tuple[int, int] = (480, 640)
+    filtered_episodes_path: str = ""
+    cot_json_path: str = ""
+    subtask_data_path: str = ""
+    target_frame_offset: int = 0  # >0: fixed offset (e.g. 6 = predict 6 frames ahead); 0: use subtask/cot logic
+    custom_data_path: str = ""  # path to custom dataset dir (source/target image pairs + captions.json)
+    balance_datasets: bool = False  # when True, use BalancedConcatDataset for 1:1 ratio
 
 
 @dataclass
@@ -98,6 +105,55 @@ class TrainingArguments(transformers.TrainingArguments):
         super().__post_init__()
 
 
+
+class DebugTrainer(Trainer):
+    """Trainer subclass that dumps the first batch (images + text) for debugging."""
+
+    def __init__(self, *args, debug_tokenizer=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._debug_tokenizer = debug_tokenizer
+        self._debug_done = False
+
+    def training_step(self, model, inputs, num_items_in_batch=None):
+        if not self._debug_done and self.args.process_index == 0:
+            self._debug_done = True
+            debug_dir = os.path.join(self.args.output_dir, "debug_batch")
+            os.makedirs(debug_dir, exist_ok=True)
+
+            print("\n" + "=" * 60)
+            print("[DEBUG] Step-1 batch inspection")
+            print(f"  Keys          : {list(inputs.keys())}")
+            print(f"  source  shape : {inputs['source'].shape}  dtype={inputs['source'].dtype}")
+            print(f"  target  shape : {inputs['target'].shape}  dtype={inputs['target'].dtype}")
+            print(f"  input_ids     : {inputs['input_ids'].shape}")
+            print(f"  attention_mask: {inputs['attention_mask'].shape}")
+
+            # ---- decode text captions ----------------------------------------
+            n_show = min(8, inputs["input_ids"].shape[0])
+            print(f"\n  [Captions (first {n_show} samples)]")
+            for i in range(n_show):
+                ids = inputs["input_ids"][i]
+                text = self._debug_tokenizer.decode(ids, skip_special_tokens=True)
+                # strip padding / long system-prompt prefix for readability
+                text = text.strip()
+                print(f"    [{i}] {repr(text)}")
+
+            # ---- save images -------------------------------------------------
+            # images are normalised to [-1, 1]; denormalise back to [0, 1]
+            src = (inputs["source"].cpu().float() * 0.5 + 0.5).clamp(0, 1)
+            tgt = (inputs["target"].cpu().float() * 0.5 + 0.5).clamp(0, 1)
+            for i in range(min(8, src.shape[0])):
+                to_pil_image(src[i]).save(os.path.join(debug_dir, f"sample_{i:02d}_source.png"))
+                to_pil_image(tgt[i]).save(os.path.join(debug_dir, f"sample_{i:02d}_target.png"))
+
+            print(f"\n  [Images saved to {debug_dir}]")
+            print("=" * 60 + "\n")
+
+        if num_items_in_batch is not None:
+            return super().training_step(model, inputs, num_items_in_batch)
+        return super().training_step(model, inputs)
+
+
 if __name__ == "__main__":
     override_parser = transformers.HfArgumentParser((OverrideArguments))
     override_args = override_parser.parse_args_into_dataclasses(
@@ -139,12 +195,13 @@ if __name__ == "__main__":
             model.get_tokenizer(),
         )
 
-    trainer = Trainer(
+    trainer = DebugTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         data_collator=collate_fn,
         callbacks=[ModelCallback()],
+        debug_tokenizer=model.get_tokenizer(),
     )
 
     training_args.output_dir = str(

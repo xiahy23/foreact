@@ -70,7 +70,7 @@ def main():
 
     # Number of training steps and logging frequency
     training_steps = 1
-    log_freq = 1
+    log_freq = 100
 
     # Run training loop
     step = 0

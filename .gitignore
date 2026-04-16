@@ -1,0 +1,45 @@
+# Data & outputs
+batch_results*/
+checkpoints/
+datasets/
+foreact-pretrained/
+merged_videos/
+inference_logs/
+verify_output/
+
+# Logs
+logs/
+outputs/
+*.log
+*.log.*
+wandb/
+
+# Python
+__pycache__/
+*.pyc
+*.pkl
+*.pth
+*.h5
+*.ckpt
+
+# Databases
+*.db
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backup files
+*.bak
+*.bak2
+*.bak3
+
+# Debug artifacts
+debug_dataset_pairs.png
+
+# Test data (large)
+test/

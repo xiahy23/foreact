@@ -15,8 +15,20 @@ from PIL import Image
 
 
 def get_safe_default_codec():
+    import os
+    forced = os.environ.get("FORCE_VIDEO_BACKEND")
+    if forced:
+        return forced
     if importlib.util.find_spec("torchcodec"):
-        return "torchcodec"
+        # Verify torchcodec shared libraries actually load at runtime before committing to it
+        try:
+            import torchcodec  # noqa: F401
+            return "torchcodec"
+        except Exception:
+            logging.warning(
+                "torchcodec module found but failed to load (FFmpeg missing?), falling back to 'pyav'"
+            )
+            return "pyav"
     else:
         logging.warning(
             "'torchcodec' is not available in your platform, falling back to 'pyav' as a default decoder"
@@ -48,10 +60,78 @@ def decode_video_frames(
         backend = get_safe_default_codec()
     if backend == "torchcodec":
         return decode_video_frames_torchcodec(video_path, timestamps, tolerance_s)
-    elif backend in ["pyav", "video_reader"]:
+    elif backend == "pyav":
+        return decode_video_frames_pyav(video_path, timestamps, tolerance_s)
+    elif backend == "video_reader":
         return decode_video_frames_torchvision(video_path, timestamps, tolerance_s, backend)
     else:
         raise ValueError(f"Unsupported video backend: {backend}")
+
+
+def decode_video_frames_pyav(
+    video_path: Path | str,
+    timestamps: list[float],
+    tolerance_s: float,
+) -> torch.Tensor:
+    """Decode video frames at the given timestamps using pure PyAV (no torchvision VideoReader).
+
+    For each requested timestamp, seeks to the nearest key frame and scans forward
+    to find the closest frame within `tolerance_s`.
+    """
+    import av as _av
+    video_path = str(video_path)
+    timestamps = sorted(timestamps)
+
+    frames_out = {}  # ts -> tensor
+    remaining = list(timestamps)
+
+    container = _av.open(video_path)
+    stream = container.streams.video[0]
+    stream.thread_type = "AUTO"
+
+    fps_num = stream.average_rate
+    time_base = float(stream.time_base)
+
+    # Process each timestamp via seek + scan
+    for ts in timestamps:
+        if ts in frames_out:
+            continue
+        # Seek to slightly before the requested timestamp
+        seek_ts = max(0, int((ts - tolerance_s) / time_base))
+        container.seek(seek_ts, stream=stream, backward=True, any_frame=False)
+
+        best_frame = None
+        best_diff = float("inf")
+
+        for packet in container.demux(stream):
+            for frame in packet.decode():
+                if frame.pts is None:
+                    continue
+                frame_ts = float(frame.pts) * time_base
+                diff = abs(frame_ts - ts)
+                if diff < best_diff:
+                    best_diff = diff
+                    best_frame = frame
+                # Stop scanning once we pass the target timestamp by more than tolerance
+                if frame_ts > ts + tolerance_s and best_frame is not None:
+                    break
+            if best_frame is not None and float(best_frame.pts) * time_base > ts + tolerance_s:
+                break
+
+        if best_frame is not None:
+            arr = best_frame.to_ndarray(format="rgb24")  # (H, W, 3) uint8
+            tensor = torch.from_numpy(arr).permute(2, 0, 1)  # (3, H, W)
+            frames_out[ts] = tensor
+        else:
+            raise RuntimeError(
+                f"Could not find frame at timestamp {ts:.4f}s in {video_path}"
+            )
+
+    container.close()
+
+    # Return in the original (unsorted) order
+    result = torch.stack([frames_out[ts] for ts in timestamps])
+    return result
 
 
 def decode_video_frames_torchvision(
