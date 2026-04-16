@@ -6,7 +6,7 @@ foreact-pretrained/
 merged_videos/
 inference_logs/
 verify_output/
-
+backup/
 # Logs
 logs/
 outputs/
@@ -24,7 +24,7 @@ __pycache__/
 
 # Databases
 *.db
-
+*.out
 # IDE
 .vscode/
 .idea/
