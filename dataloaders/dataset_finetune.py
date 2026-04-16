@@ -101,7 +101,8 @@ class ImagePairDataset(Dataset):
 
             if self._target_frame_offset > 0:
                 # Fixed-offset mode: target = source + offset, every frame is used
-                for fi in range(length):
+                # for fi in range(length):
+                for fi in range(0, length, self.fps):  # if you want to sample every fps frames
                     target_fi = fi + self._target_frame_offset
                     if target_fi >= length:
                         continue  # strict: skip when target frame doesn't exist
