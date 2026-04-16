@@ -1,0 +1,37 @@
+_gradient_checkpointing: false
+camera_key: observation.images.image_0
+cot_json_path: datasets/cot_by_episode.json
+data_path: ./datasets
+deepspeed: configs/zero1.json
+diffusion_model_id: Efficient-Large-Model/Sana_1600M_512px_diffusers
+filtered_episodes_path: ''
+in_channels: 32
+learning_rate: 9.781801964118497e-06
+lr_scheduler_type: cosine_with_min_lr
+max_steps: -1
+mllm_id: google/gemma-2-2b-it
+modules_to_freeze:
+- vae
+- mllm_backbone
+noise_scheduler_id: Efficient-Large-Model/Sana_1600M_512px_diffusers
+num_train_epochs: 5
+output_dir: ./checkpoints/automl_pureorig/trial_000
+overwrite_output_dir: true
+per_device_train_batch_size: 4
+report_to: wandb
+resume_from_checkpoint: ./foreact-pretrained
+run_name: po_trial_000_lr9.8e-06_bs4_cos_min_ws0
+save_steps: 50
+save_strategy: steps
+save_total_limit: 2
+scheduler_id: Efficient-Large-Model/Sana_1600M_512px_diffusers
+subtask_data_path: ''
+system_prompt: You are a robot and should focus on your actions. Generate a new image
+  that meets the user's instruction while maintaining consistency with the original
+  input where appropriate.
+target_image_size:
+- 480
+- 640
+vae_downsample_f: 32
+vae_id: Efficient-Large-Model/Sana_1600M_512px_diffusers
+warmup_steps: 0
