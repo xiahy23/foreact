@@ -8,23 +8,23 @@ dataloader_num_workers: 4
 deepspeed: configs/zero1.json
 diffusion_model_id: /media/raid/workspace/xiahongyu/.cache/hub/models--Efficient-Large-Model--Sana_1600M_512px_diffusers/snapshots/e58e81ec2dc4faf305122872313884df3afeffa8
 filtered_episodes_path: ''
-gradient_accumulation_steps: 4
+gradient_accumulation_steps: 1
 in_channels: 32
 learning_rate: 7.106591851092237e-06
 lr_scheduler_kwargs:
   min_lr: 8.603877510740653e-07
 lr_scheduler_type: cosine_with_min_lr
-max_steps: 17690
+max_steps: -1
 mllm_id: /media/raid/workspace/xiahongyu/.cache/hub/models--google--gemma-2-2b-it/snapshots/299a8560bedf22ed1c72a8a11e7dce4a7f9f51f8
 modules_to_freeze:
 - vae
 noise_scheduler_id: /media/raid/workspace/xiahongyu/.cache/hub/models--Efficient-Large-Model--Sana_1600M_512px_diffusers/snapshots/e58e81ec2dc4faf305122872313884df3afeffa8
 num_train_epochs: 10.0
-output_dir: ./checkpoints/F-exp01-alleval-t000-17690s
+output_dir: ./checkpoints
 overwrite_output_dir: true
-per_device_train_batch_size: 8
+per_device_train_batch_size: 32
 report_to: wandb
-resume_from_checkpoint: ./checkpoints/finetune_alleval_bridge_offset6/checkpoint-17690
+resume_from_checkpoint: ./foreact-pretrained
 run_name: F-exp01-ae-t000-17690s
 save_steps: 500
 save_strategy: steps

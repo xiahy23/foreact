@@ -3,7 +3,6 @@
 # F-exp01: Single training run based on automl trial_000 config
 #   - lr=7.1e-6, bs=8x4, cosine_with_min_lr, warmup=100
 #   - max_steps=17690 (overrides num_train_epochs)
-#   - Resumes from: checkpoints/finetune_alleval_bridge_offset6/checkpoint-17690
 #   - Output: checkpoints/F-exp01-alleval-t000-17690s
 # =============================================================
 set -uo pipefail
