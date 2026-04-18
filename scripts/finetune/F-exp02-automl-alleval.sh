@@ -14,7 +14,7 @@
 #     - batch_results_F-exp02_automl_alleval/trial_XXX/
 #   Resume each trial from: ./foreact-pretrained
 # =============================================================
-set -uo pipefail
+set -o pipefail
 
 WORK_DIR="/media/raid/workspace/xiahongyu/foreact"
 LOG_FILE="${WORK_DIR}/F-exp02-automl-alleval.log"
