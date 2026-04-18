@@ -12,8 +12,8 @@ cd "$WORK_DIR"
 # export HF_HOME=/media/raid/workspace/surongpeng/ws_lixing/huggingface
 # export HF_HUB_OFFLINE=1
 # export HF_HUB_DOWNLOAD_TIMEOUT=120
-# export FORCE_VIDEO_BACKEND=pyav
 # export HF_HUB_ETAG_TIMEOUT=30
+export FORCE_VIDEO_BACKEND=pyav
 
 # ---- Helper: check if enough GPUs are free ----
 gpus_are_free() {
