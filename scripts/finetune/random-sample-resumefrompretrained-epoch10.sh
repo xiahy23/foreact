@@ -5,7 +5,7 @@ WORK_DIR="/media/raid/workspace/xiahongyu/ws_lixing/foreact"
 CONFIG="random-sample-resumefrompretrained-epoch10.yaml"
 LOG_FILE="${WORK_DIR}/random-sample-resumefrompretrained-epoch10.log"
 NUM_GPUS="${1:-8}"
-MIN_FREE_MB="${2:-70000}"
+MIN_FREE_MB="${2:-30000}"
 
 cd "$WORK_DIR"
 
