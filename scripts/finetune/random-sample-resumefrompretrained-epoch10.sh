@@ -1,21 +1,16 @@
-#!/usr/bin/env bash
-# =============================================================
-# F-exp01: Single training run based on automl trial_000 config
-#   - lr=7.1e-6, bs=8x4, cosine_with_min_lr, warmup=100
-#   - max_steps=17690 (overrides num_train_epochs)
-#   - Resumes from: checkpoints/finetune_alleval_bridge_offset6/checkpoint-17690
-#   - Output: checkpoints/F-exp01-alleval-t000-17690s
-# =============================================================
+
 set -uo pipefail
 
-WORK_DIR="/media/raid/workspace/xiahongyu/foreact"
-CONFIG="F-exp01-alleval-t000-17690s.yaml"
-LOG_FILE="${WORK_DIR}/F-exp01-alleval-t000-17690s.log"
+WORK_DIR="/media/raid/workspace/surongpeng/ws_lixing/newforeact/foreact"
+CONFIG="random-sample-resumefrompretrained-epoch10.yaml"
+LOG_FILE="${WORK_DIR}/random-sample-resumefrompretrained-epoch10.log"
 NUM_GPUS="${1:-8}"
 MIN_FREE_MB="${2:-70000}"
 
 cd "$WORK_DIR"
 
+export HF_HOME=/media/raid/workspace/surongpeng/ws_lixing/huggingface
+export HF_HUB_OFFLINE=1
 export HF_HUB_DOWNLOAD_TIMEOUT=120
 export FORCE_VIDEO_BACKEND=pyav
 export HF_HUB_ETAG_TIMEOUT=30
@@ -57,7 +52,7 @@ export CUDA_VISIBLE_DEVICES="$GPU_IDS"
 echo "[$(date)] Using GPUs: $CUDA_VISIBLE_DEVICES"
 
 # ---- Launch training ----
-echo "[$(date)] Starting F-exp01: config=${CONFIG}, max_steps=17690, gpus=${NUM_GPUS}"
+echo "[$(date)] Starting F-exp01: config=${CONFIG}, max_steps=-1, gpus=${NUM_GPUS}"
 
 accelerate launch \
     --num_processes "$NUM_GPUS" \

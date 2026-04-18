@@ -458,9 +458,16 @@ class CustomVideoDataset(Dataset):
 
 
 class BalancedConcatDataset(Dataset):
-    """Wraps two datasets and ensures 50/50 sampling by oversampling the smaller one."""
+    """Wraps two datasets and ensures 50/50 sampling by oversampling the smaller one.
 
-    def __init__(self, dataset_a: Dataset, dataset_b: Dataset) -> None:
+    Each side's access order for one epoch is a per-epoch sampling schedule of length
+    ``_half``: ``floor(_half / n)`` random permutations of its indices concatenated
+    with a random ``_half % n``-sized subset drawn without replacement. Call
+    ``set_epoch(epoch)`` at each epoch start so the "remainder" entries change across
+    epochs instead of always hitting the first ``_half % n`` indices.
+    """
+
+    def __init__(self, dataset_a: Dataset, dataset_b: Dataset, base_seed: int = 0) -> None:
         super().__init__()
         self.dataset_a = dataset_a
         self.dataset_b = dataset_b
@@ -468,17 +475,35 @@ class BalancedConcatDataset(Dataset):
         self.len_b = len(dataset_b)
         # Total length = 2 * max(len_a, len_b) so each contributes 50%
         self._half = max(self.len_a, self.len_b)
+        self._base_seed = int(base_seed)
+        self._schedule_a: torch.Tensor = torch.empty(0, dtype=torch.long)
+        self._schedule_b: torch.Tensor = torch.empty(0, dtype=torch.long)
+        self.set_epoch(0)
         print(f"BalancedConcatDataset: dataset_a={self.len_a}, dataset_b={self.len_b}, "
-              f"effective_half={self._half}, total={2 * self._half}")
+              f"effective_half={self._half}, total={2 * self._half}, base_seed={self._base_seed}")
+
+    def _build_schedule(self, n: int, generator: torch.Generator) -> torch.Tensor:
+        full_cycles, remainder = divmod(self._half, n)
+        parts = [torch.randperm(n, generator=generator) for _ in range(full_cycles)]
+        if remainder > 0:
+            parts.append(torch.randperm(n, generator=generator)[:remainder])
+        return torch.cat(parts) if parts else torch.empty(0, dtype=torch.long)
+
+    def set_epoch(self, epoch: int) -> None:
+        g = torch.Generator()
+        g.manual_seed(self._base_seed * 1_000_003 + int(epoch))
+        self._schedule_a = self._build_schedule(self.len_a, g)
+        self._schedule_b = self._build_schedule(self.len_b, g)
 
     def __len__(self) -> int:
         return 2 * self._half
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
+        pos = idx // 2
         if idx % 2 == 0:
-            return self.dataset_a[(idx // 2) % self.len_a]
+            return self.dataset_a[int(self._schedule_a[pos].item())]
         else:
-            return self.dataset_b[(idx // 2) % self.len_b]
+            return self.dataset_b[int(self._schedule_b[pos].item())]
 
 
 def _collate_fn_imagepair(batch, tokenize_func, tokenizer, source_transform, target_transform):
@@ -531,7 +556,7 @@ def _load_single_dataset(repo_id, root, camera_key, cot_data=None, allowed_episo
         return repo_id, None
 
 
-def get_train_datasets(data_args, tokenize_func, tokenizer):
+def get_train_datasets(data_args, tokenize_func, tokenizer, base_seed: int = 0):
     train_datasets = {}
     
     # Prepare dataset loading tasks
@@ -648,7 +673,7 @@ def get_train_datasets(data_args, tokenize_func, tokenizer):
     if balance_datasets and custom_dataset is not None and len(all_datasets) > 0:
         # Use BalancedConcatDataset for 1:1 ratio between lerobot data and custom data
         base_dataset = ConcatDataset(all_datasets) if len(all_datasets) > 1 else all_datasets[0]
-        train_dataset = BalancedConcatDataset(base_dataset, custom_dataset)
+        train_dataset = BalancedConcatDataset(base_dataset, custom_dataset, base_seed=base_seed)
         print(f"Final training dataset (balanced): {len(train_dataset)} samples "
               f"(base={len(base_dataset)}, custom={len(custom_dataset)})")
     else:

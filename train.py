@@ -8,7 +8,7 @@ import PIL.Image
 
 from accelerate.utils import release_memory
 from dataclasses import dataclass, field
-from transformers import Trainer
+from transformers import Trainer, TrainerCallback
 from transformers.trainer_utils import get_last_checkpoint
 from torchvision.transforms.functional import to_pil_image
 from PIL import PngImagePlugin
@@ -106,6 +106,19 @@ class TrainingArguments(transformers.TrainingArguments):
 
 
 
+class BalancedEpochCallback(TrainerCallback):
+    """Notify the train dataset (e.g. BalancedConcatDataset) at the start of each epoch
+    so it can regenerate its per-epoch sampling schedule."""
+
+    def __init__(self, train_dataset):
+        self._train_dataset = train_dataset
+
+    def on_epoch_begin(self, args, state, control, **kwargs):
+        ds = self._train_dataset
+        if hasattr(ds, "set_epoch"):
+            ds.set_epoch(int(state.epoch) if state.epoch is not None else 0)
+
+
 class DebugTrainer(Trainer):
     """Trainer subclass that dumps the first batch (images + text) for debugging."""
 
@@ -193,6 +206,7 @@ if __name__ == "__main__":
             data_args,
             model.get_tokenize_fn(),
             model.get_tokenizer(),
+            base_seed=training_args.seed,
         )
 
     trainer = DebugTrainer(
@@ -200,7 +214,7 @@ if __name__ == "__main__":
         args=training_args,
         train_dataset=train_dataset,
         data_collator=collate_fn,
-        callbacks=[ModelCallback()],
+        callbacks=[ModelCallback(), BalancedEpochCallback(train_dataset)],
         debug_tokenizer=model.get_tokenizer(),
     )
 
