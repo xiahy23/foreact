@@ -56,6 +56,7 @@ echo "[$(date)] Starting F-exp01: config=${CONFIG}, max_steps=-1, gpus=${NUM_GPU
 
 accelerate launch \
     --num_processes "$NUM_GPUS" \
+    --main_process_port 29501 \
     --mixed_precision bf16 \
     train.py \
     --config_file "$CONFIG" \
