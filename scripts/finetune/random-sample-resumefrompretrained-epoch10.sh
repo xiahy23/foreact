@@ -1,7 +1,7 @@
 
 set -uo pipefail
 
-WORK_DIR="/media/raid/workspace/surongpeng/ws_lixing/newforeact/foreact"
+WORK_DIR="/media/raid/workspace/xiahongyu/ws_lixing/foreact"
 CONFIG="random-sample-resumefrompretrained-epoch10.yaml"
 LOG_FILE="${WORK_DIR}/random-sample-resumefrompretrained-epoch10.log"
 NUM_GPUS="${1:-8}"
@@ -9,11 +9,11 @@ MIN_FREE_MB="${2:-70000}"
 
 cd "$WORK_DIR"
 
-export HF_HOME=/media/raid/workspace/surongpeng/ws_lixing/huggingface
-export HF_HUB_OFFLINE=1
-export HF_HUB_DOWNLOAD_TIMEOUT=120
-export FORCE_VIDEO_BACKEND=pyav
-export HF_HUB_ETAG_TIMEOUT=30
+# export HF_HOME=/media/raid/workspace/surongpeng/ws_lixing/huggingface
+# export HF_HUB_OFFLINE=1
+# export HF_HUB_DOWNLOAD_TIMEOUT=120
+# export FORCE_VIDEO_BACKEND=pyav
+# export HF_HUB_ETAG_TIMEOUT=30
 
 # ---- Helper: check if enough GPUs are free ----
 gpus_are_free() {
