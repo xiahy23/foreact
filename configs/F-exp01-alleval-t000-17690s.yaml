@@ -21,7 +21,7 @@ modules_to_freeze:
 noise_scheduler_id: /media/raid/workspace/xiahongyu/.cache/hub/models--Efficient-Large-Model--Sana_1600M_512px_diffusers/snapshots/e58e81ec2dc4faf305122872313884df3afeffa8
 num_train_epochs: 10.0
 output_dir: ./checkpoints
-overwrite_output_dir: true
+overwrite_output_dir: false
 per_device_train_batch_size: 32
 report_to: wandb
 resume_from_checkpoint: ./foreact-pretrained
