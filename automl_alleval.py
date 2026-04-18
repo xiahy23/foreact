@@ -385,13 +385,28 @@ def run_study(args):
         sampler=optuna.samplers.TPESampler(seed=42),
     )
 
+    # Count already-finished trials so restart only runs remaining ones
+    import optuna as _optuna
+    done_trials = [
+        t for t in study.trials
+        if t.state in (_optuna.trial.TrialState.COMPLETE, _optuna.trial.TrialState.PRUNED)
+    ]
+    n_done = len(done_trials)
+    n_remaining = max(0, args.n_trials - n_done)
+
     logger.info(f"\n{'='*60}")
     logger.info(f"Starting {EXP_TAG} Optuna Study")
-    logger.info(f"  Trials:  {args.n_trials}")
+    logger.info(f"  Total trials requested : {args.n_trials}")
+    logger.info(f"  Already completed      : {n_done}")
+    logger.info(f"  Remaining to run       : {n_remaining}")
     logger.info(f"  Epochs:  {args.num_epochs}")
     logger.info(f"  GPUs:    {args.gpus}")
     logger.info(f"  Storage: {storage}")
     logger.info(f"{'='*60}\n")
+
+    if n_remaining == 0:
+        logger.info("All trials already completed. Nothing to do.")
+        return
 
     vlm_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vlm_scorer")
     pending_score = None
@@ -410,13 +425,13 @@ def run_study(args):
         logger.info(f">>> Trial {prev_tid} score reported: {score:.1f}/100")
         pending_score = None
 
-    for i in range(args.n_trials):
+    for i in range(n_remaining):
         if pending_score is not None and pending_score[2].done():
             _finish_pending()
 
         trial = study.ask()
         tid = trial.number
-        logger.info(f"\n{'='*60}\n>>> Trial {tid} ({i+1}/{args.n_trials})\n{'='*60}")
+        logger.info(f"\n{'='*60}\n>>> Trial {tid} ({i+1}/{n_remaining}, total done after: {n_done+i+1}/{args.n_trials})\n{'='*60}")
 
         params = sample_params(trial)
         logger.info(f"Trial {tid} params: {json.dumps({k: str(v) for k, v in params.items()}, indent=2)}")
