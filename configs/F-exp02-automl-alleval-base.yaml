@@ -1,0 +1,67 @@
+# =============================================================
+# F-exp02: AutoML search on all_eval + bridge data
+# =============================================================
+# Goal   : Explore per-device batch size + learning-schedule
+#          hyperparameters WITHOUT gradient accumulation.
+# Base   : Resume from pretrained foreact weights (same init as F-exp01).
+# Search : per_device_train_batch_size in [16,32,64,128,256,512]
+#          learning_rate in [3e-6, 3e-5] (log-uniform)
+#          lr_scheduler_type in [cosine_with_min_lr, cosine, linear, constant_with_warmup]
+#          warmup_steps in [50, 500] step 50
+#          unfreeze_mllm in [False, True]
+#          gradient_accumulation_steps FIXED at 1.
+# Saving : save_strategy=epoch -> 1 checkpoint per epoch retained
+#          (save_total_limit=100 = keep all 10 epoch checkpoints).
+# Output : ./checkpoints/F-exp02-automl-alleval/trial_XXX/<run_name>
+# Eval   : After each trial, batch_inference.py + VLM scoring.
+# =============================================================
+
+# ---- Model (Sana-1.6B + Gemma-2-2B) ----
+diffusion_model_id: "/media/raid/workspace/xiahongyu/.cache/hub/models--Efficient-Large-Model--Sana_1600M_512px_diffusers/snapshots/e58e81ec2dc4faf305122872313884df3afeffa8"
+vae_id:             "/media/raid/workspace/xiahongyu/.cache/hub/models--Efficient-Large-Model--Sana_1600M_512px_diffusers/snapshots/e58e81ec2dc4faf305122872313884df3afeffa8"
+noise_scheduler_id: "/media/raid/workspace/xiahongyu/.cache/hub/models--Efficient-Large-Model--Sana_1600M_512px_diffusers/snapshots/e58e81ec2dc4faf305122872313884df3afeffa8"
+scheduler_id:       "/media/raid/workspace/xiahongyu/.cache/hub/models--Efficient-Large-Model--Sana_1600M_512px_diffusers/snapshots/e58e81ec2dc4faf305122872313884df3afeffa8"
+mllm_id:            "/media/raid/workspace/xiahongyu/.cache/hub/models--google--gemma-2-2b-it/snapshots/299a8560bedf22ed1c72a8a11e7dce4a7f9f51f8"
+
+vae_downsample_f: 32
+in_channels: 32
+system_prompt: "You are a robot and should focus on your actions. Generate a new image that meets the user's instruction while maintaining consistency with the original input where appropriate."
+_gradient_checkpointing: true
+modules_to_freeze:
+  - vae
+  - mllm_backbone
+
+# ---- Data ----
+data_path: "./datasets"
+camera_key: "observation.images.image_0"
+target_image_size: [480, 640]
+filtered_episodes_path: ""
+cot_json_path: ""
+subtask_data_path: ""
+target_frame_offset: 6
+custom_data_path: "./datasets/all_eval"
+balance_datasets: true
+
+# ---- Training defaults (trial params override these) ----
+per_device_train_batch_size: 32
+gradient_accumulation_steps: 1
+learning_rate: 1.0e-5
+warmup_steps: 100
+num_train_epochs: 10.0
+max_steps: -1
+lr_scheduler_type: "cosine_with_min_lr"
+lr_scheduler_kwargs:
+  min_lr: 1.0e-6
+report_to: "wandb"
+run_name: "F-exp02-automl-alleval-base"
+dataloader_num_workers: 4
+deepspeed: "configs/zero1.json"
+
+# ---- Checkpointing: 1 ckpt per epoch, all retained ----
+save_strategy: "epoch"
+save_total_limit: 100
+
+# ---- Resume from pretrained (same init as F-exp01) ----
+output_dir: "./checkpoints/F-exp02-automl-alleval"
+resume_from_checkpoint: "./foreact-pretrained"
+overwrite_output_dir: true
