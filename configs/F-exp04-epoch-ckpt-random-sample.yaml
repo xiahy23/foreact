@@ -25,7 +25,7 @@ overwrite_output_dir: false
 per_device_train_batch_size: 32
 report_to: wandb
 resume_from_checkpoint: ./checkpoints/finetune_alleval_bridge_offset6/checkpoint-17690
-run_name: F-exp03-epoch-ckpt
+run_name: F-exp04-epoch-ckpt-random-sample
 save_strategy: epoch
 save_total_limit: 20
 scheduler_id: /media/raid/workspace/xiahongyu/.cache/hub/models--Efficient-Large-Model--Sana_1600M_512px_diffusers/snapshots/e58e81ec2dc4faf305122872313884df3afeffa8
