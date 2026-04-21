@@ -2,11 +2,15 @@
 batch_results*/
 checkpoints/
 datasets/
+Dataset/
 foreact-pretrained/
 merged_videos/
+output_videos/
 inference_logs/
 verify_output/
 backup/
+archive/
+
 # Logs
 logs/
 outputs/
@@ -17,6 +21,7 @@ wandb/
 # Python
 __pycache__/
 *.pyc
+*.pyo
 *.pkl
 *.pth
 *.h5
@@ -25,6 +30,7 @@ __pycache__/
 # Databases
 *.db
 *.out
+
 # IDE
 .vscode/
 .idea/
@@ -43,3 +49,8 @@ debug_dataset_pairs.png
 
 # Test data (large)
 test/
+*_test/
+
+# Temporary scratch images
+test_input_*.png
+test_pred_*.png

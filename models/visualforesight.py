@@ -262,6 +262,7 @@ class VisualForesight(PreTrainedModel):
         return_tensor=False,
         negative_prompt: str = "",
         enable_progress_bar=False,
+        capture_steps=None,
         **kwargs,
     ):
         device = next(self.parameters()).device
@@ -314,7 +315,8 @@ class VisualForesight(PreTrainedModel):
 
         # --- Denoising loop ---
         n_cond = len(captions)
-        for t in tqdm(self.scheduler.timesteps, desc="Sampling", disable=not enable_progress_bar):
+        intermediates = {}
+        for step_i, t in enumerate(tqdm(self.scheduler.timesteps, desc="Sampling", disable=not enable_progress_bar)):
             latent_input = latents.repeat(n_cond, 1, 1, 1).to(prompt_embeds.dtype)
             if hasattr(self.scheduler, "scale_model_input"):
                 latent_input = self.scheduler.scale_model_input(latent_input, t)
@@ -340,7 +342,16 @@ class VisualForesight(PreTrainedModel):
 
             latents = self.scheduler.step(noise_pred, t, latents).prev_sample
 
-        return self.decode_latents(
+            if capture_steps is not None and (step_i + 1) in capture_steps:
+                intermediates[step_i + 1] = self.decode_latents(
+                    latents.to(self.vae.dtype) if self.vae is not None else latents,
+                    return_tensor=return_tensor,
+                )
+
+        final = self.decode_latents(
             latents.to(self.vae.dtype) if self.vae is not None else latents,
             return_tensor=return_tensor,
         )
+        if capture_steps is not None:
+            return final, intermediates
+        return final
