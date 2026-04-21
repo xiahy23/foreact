@@ -1,0 +1,30 @@
+# Datasets and pretrained weights (large files)
+Dataset/
+foreact-pretrained/
+checkpoints/
+# Test directories
+test/
+*_test/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Archive (non-functional/experimental files)
+archive/
+
+# Checkpoints (large model files)
+checkpoints/
+
+# Output and log files
+output_videos/
+inference_logs/
+*.log
+
+# Backup files
+*.bak
+
+# Temporary / scratch images
+test_input_*.png
+test_pred_*.png
