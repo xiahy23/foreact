@@ -26,6 +26,7 @@ class ImagePairDataset(Dataset):
         cot_data: Optional[Dict[str, Any]] = None,
         allowed_episode_indices: Optional[set] = None,
         target_frame_offset: int = 0,
+        source_frame_stride: int = 0,
     ) -> None:
         super().__init__()
         self.root = Path(root)
@@ -52,6 +53,7 @@ class ImagePairDataset(Dataset):
         self._cot_data = cot_data  # keyed by str(episode_index)
         self._allowed_episode_indices = allowed_episode_indices  # set of ints, None = all
         self._target_frame_offset = target_frame_offset
+        self._source_frame_stride = int(source_frame_stride) if source_frame_stride else 0
 
         # Validate camera key
         if self.camera_key not in self.features:
@@ -93,16 +95,12 @@ class ImagePairDataset(Dataset):
             ep_key = str(episode_index)
 
             # Get episode-level task description (used for all modes)
-            tasks = ep.get("tasks", [])
-            if isinstance(tasks, list):
-                ep_caption = "; ".join([str(t) for t in tasks]) if len(tasks) > 0 else ""
-            else:
-                ep_caption = str(tasks)
+            ep_caption = self._episode_caption(ep)
 
             if self._target_frame_offset > 0:
                 # Fixed-offset mode: target = source + offset, every frame is used
-                # for fi in range(length):
-                for fi in range(0, length, self.fps):  # if you want to sample every fps frames
+                source_stride = self._source_frame_stride or self.fps
+                for fi in range(0, length, source_stride):
                     target_fi = fi + self._target_frame_offset
                     if target_fi >= length:
                         continue  # strict: skip when target frame doesn't exist
@@ -139,6 +137,17 @@ class ImagePairDataset(Dataset):
 
     def __len__(self) -> int:
         return len(self._index)
+
+    @staticmethod
+    def _episode_caption(ep: Dict[str, Any]) -> str:
+        tasks = ep.get("tasks", None)
+        if isinstance(tasks, list):
+            caption = "; ".join([str(t) for t in tasks]) if len(tasks) > 0 else ""
+        elif tasks is not None:
+            caption = str(tasks)
+        else:
+            caption = str(ep.get("task", ""))
+        return caption
 
     def _episode_chunk(self, episode_index: int) -> int:
         return episode_index // self.chunks_size
@@ -182,14 +191,7 @@ class ImagePairDataset(Dataset):
         video_path = self._video_path_for_episode(episode_index)
         source_img, target_img = self._decode_pair(video_path, ts_source, ts_target)
 
-        if subtask_name:
-            caption = subtask_name
-        else:
-            tasks = ep.get("tasks", [])
-            if isinstance(tasks, list):
-                caption = "; ".join([str(t) for t in tasks]) if len(tasks) > 0 else ""
-            else:
-                caption = str(tasks)
+        caption = subtask_name if subtask_name else self._episode_caption(ep)
 
         return {
             "source_image": self._to_pil(source_img),
@@ -364,6 +366,7 @@ class CustomVideoDataset(Dataset):
         root: str | Path,
         fps: int = 5,
         target_frame_offset: int = 6,
+        source_frame_stride: int = 1,
         tolerance_s: float = 1e-4,
         video_backend: Optional[str] = None,
     ) -> None:
@@ -371,6 +374,7 @@ class CustomVideoDataset(Dataset):
         self.root = Path(root)
         self.fps = fps
         self._target_frame_offset = target_frame_offset
+        self._source_frame_stride = max(1, int(source_frame_stride))
         self.tolerance_s = tolerance_s
         self.video_backend = video_backend if video_backend else get_safe_default_codec()
 
@@ -397,7 +401,7 @@ class CustomVideoDataset(Dataset):
                 if total_frames <= 1:
                     continue
 
-                for fi in range(total_frames):
+                for fi in range(0, total_frames, self._source_frame_stride):
                     target_fi = fi + self._target_frame_offset
                     if target_fi >= total_frames:
                         continue
@@ -540,7 +544,7 @@ def _collate_fn_imagepair(batch, tokenize_func, tokenizer, source_transform, tar
     return return_dict
 
 
-def _load_single_dataset(repo_id, root, camera_key, cot_data=None, allowed_episode_indices=None, target_frame_offset=0):
+def _load_single_dataset(repo_id, root, camera_key, cot_data=None, allowed_episode_indices=None, target_frame_offset=0, source_frame_stride=0):
     try:
         dataset = ImagePairDataset(
             root=root,
@@ -548,6 +552,7 @@ def _load_single_dataset(repo_id, root, camera_key, cot_data=None, allowed_episo
             cot_data=cot_data,
             allowed_episode_indices=allowed_episode_indices,
             target_frame_offset=target_frame_offset,
+            source_frame_stride=source_frame_stride,
         )
         print(f"✓ Loaded dataset: {repo_id}")
         return repo_id, dataset
@@ -593,6 +598,9 @@ def get_train_datasets(data_args, tokenize_func, tokenizer, base_seed: int = 0):
     target_frame_offset = getattr(data_args, "target_frame_offset", 0)
     if target_frame_offset > 0:
         print(f"Using fixed target_frame_offset={target_frame_offset} (ignoring COT/subtask logic)")
+    source_frame_stride = getattr(data_args, "source_frame_stride", 0)
+    if source_frame_stride:
+        print(f"Using source_frame_stride={source_frame_stride}")
 
     # Load datasets in parallel using ThreadPoolExecutor
     print(f"Loading {len(dataset_tasks)} datasets in parallel...")
@@ -601,7 +609,7 @@ def get_train_datasets(data_args, tokenize_func, tokenizer, base_seed: int = 0):
     with ThreadPoolExecutor(max_workers=min(32, len(dataset_tasks))) as executor:
         # Submit all tasks
         future_to_task = {
-            executor.submit(_load_single_dataset, repo_id, root, camera_key, cot_data, allowed_episode_indices, target_frame_offset): (repo_id, root, camera_key)
+            executor.submit(_load_single_dataset, repo_id, root, camera_key, cot_data, allowed_episode_indices, target_frame_offset, source_frame_stride): (repo_id, root, camera_key)
             for repo_id, root, camera_key in dataset_tasks
         }
         
@@ -658,7 +666,11 @@ def get_train_datasets(data_args, tokenize_func, tokenizer, base_seed: int = 0):
     if custom_data_path and Path(custom_data_path).is_dir():
         print(f"Loading CustomVideoDataset from {custom_data_path} ...")
         try:
-            custom_dataset = CustomVideoDataset(root=custom_data_path, target_frame_offset=target_frame_offset)
+            custom_dataset = CustomVideoDataset(
+                root=custom_data_path,
+                target_frame_offset=target_frame_offset,
+                source_frame_stride=source_frame_stride or 1,
+            )
             print(f"✓ Loaded CustomVideoDataset: {len(custom_dataset)} samples")
         except Exception as e:
             print(f"✗ Failed to load CustomVideoDataset: {e}")

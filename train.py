@@ -59,6 +59,7 @@ class DataArguments:
     cot_json_path: str = ""
     subtask_data_path: str = ""
     target_frame_offset: int = 0  # >0: fixed offset (e.g. 6 = predict 6 frames ahead); 0: use subtask/cot logic
+    source_frame_stride: int = 0  # >0: sample fixed-offset source frames every N frames; 0: use dataset fps
     custom_data_path: str = ""  # path to custom dataset dir (source/target image pairs + captions.json)
     balance_datasets: bool = False  # when True, use BalancedConcatDataset for 1:1 ratio
 
