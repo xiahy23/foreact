@@ -1,0 +1,56 @@
+mllm_id: /media/raid/workspace/xiahongyu/.cache/hub/models--google--gemma-2-2b-it/snapshots/299a8560bedf22ed1c72a8a11e7dce4a7f9f51f8
+diffusion_model_id: /media/raid/workspace/xiahongyu/.cache/hub/models--Efficient-Large-Model--Sana_1600M_512px_diffusers/snapshots/e58e81ec2dc4faf305122872313884df3afeffa8
+vae_id: /media/raid/workspace/xiahongyu/.cache/hub/models--Efficient-Large-Model--Sana_1600M_512px_diffusers/snapshots/e58e81ec2dc4faf305122872313884df3afeffa8
+noise_scheduler_id: /media/raid/workspace/xiahongyu/.cache/hub/models--Efficient-Large-Model--Sana_1600M_512px_diffusers/snapshots/e58e81ec2dc4faf305122872313884df3afeffa8
+scheduler_id: /media/raid/workspace/xiahongyu/.cache/hub/models--Efficient-Large-Model--Sana_1600M_512px_diffusers/snapshots/e58e81ec2dc4faf305122872313884df3afeffa8
+vae_downsample_f: 32
+in_channels: 32
+system_prompt: You are a robot and should focus on your actions. Generate a new image
+  that meets the user's instruction while maintaining consistency with the original
+  input where appropriate.
+_gradient_checkpointing: true
+modules_to_freeze:
+- vae
+- mllm_backbone
+data_path: datasets/aloha_fexp_roots/F-exp17-aloha-mixed-mixed_motion_delta005_lr3e-5
+camera_key: observation.images.cam_high
+target_image_size:
+- 480
+- 640
+filtered_episodes_path: ''
+cot_json_path: ''
+subtask_data_path: ''
+custom_data_path: ''
+balance_datasets: false
+target_frame_offset: 30
+source_frame_stride: 5
+min_source_frame_index: 0
+trajectory_motion_filter: true
+trajectory_key: observation.state
+trajectory_motion_start_threshold: 0.05
+trajectory_motion_start_padding: 5
+min_trajectory_delta: 0.05
+per_device_train_batch_size: 4
+gradient_accumulation_steps: 4
+learning_rate: 3.0e-05
+weight_decay: 0.05
+max_grad_norm: 0.5
+lr_scheduler_type: cosine_with_min_lr
+warmup_steps: 100
+num_train_epochs: 8.0
+save_strategy: epoch
+save_total_limit: 4
+logging_steps: 5
+dataloader_num_workers: 12
+dataloader_persistent_workers: false
+dataloader_pin_memory: true
+bf16: true
+tf32: true
+deepspeed: configs/zero1.json
+output_dir: ./checkpoints
+overwrite_output_dir: false
+resume_from_checkpoint: ./foreact-pretrained
+run_name: F-exp17-aloha-mixed-mixed_motion_delta005_lr3e-5
+report_to: none
+lr_scheduler_kwargs:
+  min_lr: 3.0e-06
