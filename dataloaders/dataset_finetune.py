@@ -1,8 +1,10 @@
 import glob
 import json
+import math
 import os
 import re
 import time
+import numpy as np
 import torch
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -27,6 +29,12 @@ class ImagePairDataset(Dataset):
         allowed_episode_indices: Optional[set] = None,
         target_frame_offset: int = 0,
         source_frame_stride: int = 0,
+        min_source_frame_index: int = 0,
+        trajectory_motion_filter: bool = False,
+        trajectory_key: str = "observation.state",
+        trajectory_motion_start_threshold: float = 0.05,
+        trajectory_motion_start_padding: int = 0,
+        min_trajectory_delta: float = 0.0,
     ) -> None:
         super().__init__()
         self.root = Path(root)
@@ -49,11 +57,20 @@ class ImagePairDataset(Dataset):
         self.fps: int = int(self.info.get("fps", 30))
         self.chunks_size: int = int(self.info.get("chunks_size", 1000))
         self.video_path_template: Optional[str] = self.info.get("video_path")
+        self.data_path_template: Optional[str] = self.info.get("data_path")
         self.features: Dict[str, Dict[str, Any]] = self.info.get("features", {})
         self._cot_data = cot_data  # keyed by str(episode_index)
         self._allowed_episode_indices = allowed_episode_indices  # set of ints, None = all
         self._target_frame_offset = target_frame_offset
         self._source_frame_stride = int(source_frame_stride) if source_frame_stride else 0
+        self._min_source_frame_index = max(0, int(min_source_frame_index))
+        self._trajectory_motion_filter = bool(trajectory_motion_filter)
+        self._trajectory_key = trajectory_key
+        self._trajectory_motion_start_threshold = float(trajectory_motion_start_threshold)
+        self._trajectory_motion_start_padding = max(0, int(trajectory_motion_start_padding))
+        self._min_trajectory_delta = max(0.0, float(min_trajectory_delta))
+        self._trajectory_cache: Dict[int, Optional[np.ndarray]] = {}
+        self._motion_start_by_episode: Dict[int, int] = {}
 
         # Validate camera key
         if self.camera_key not in self.features:
@@ -100,10 +117,20 @@ class ImagePairDataset(Dataset):
             if self._target_frame_offset > 0:
                 # Fixed-offset mode: target = source + offset, every frame is used
                 source_stride = self._source_frame_stride or self.fps
+                min_fi = self._episode_min_source_frame(episode_index)
+                traj = self._trajectory_for_episode(episode_index) if self._min_trajectory_delta > 0 else None
                 for fi in range(0, length, source_stride):
+                    if fi < min_fi:
+                        continue
                     target_fi = fi + self._target_frame_offset
                     if target_fi >= length:
                         continue  # strict: skip when target frame doesn't exist
+                    if (
+                        traj is not None
+                        and target_fi < len(traj)
+                        and self._trajectory_delta(traj, fi, target_fi) < self._min_trajectory_delta
+                    ):
+                        continue
                     self._index.append((i, fi, target_fi, ep_caption))
             elif self._cot_data and ep_key in self._cot_data:
                 cot = self._cot_data[ep_key]
@@ -152,6 +179,15 @@ class ImagePairDataset(Dataset):
     def _episode_chunk(self, episode_index: int) -> int:
         return episode_index // self.chunks_size
 
+    def _episode_min_source_frame(self, episode_index: int) -> int:
+        min_fi = self._min_source_frame_index
+        if not self._trajectory_motion_filter:
+            return min_fi
+        if episode_index not in self._motion_start_by_episode:
+            self._motion_start_by_episode[episode_index] = self._find_motion_start_frame(episode_index)
+        motion_start = max(0, self._motion_start_by_episode[episode_index] - self._trajectory_motion_start_padding)
+        return max(min_fi, motion_start)
+
     def _video_path_for_episode(self, episode_index: int) -> Path:
         if not self.video_path_template:
             chunk = self._episode_chunk(episode_index)
@@ -163,6 +199,57 @@ class ImagePairDataset(Dataset):
             episode_index=episode_index,
         )
         return self.root / fpath
+
+    def _data_path_for_episode(self, episode_index: int) -> Path:
+        if not self.data_path_template:
+            chunk = self._episode_chunk(episode_index)
+            rel = f"data/chunk-{chunk:03d}/episode_{episode_index:06d}.parquet"
+            return self.root / rel
+        fpath = self.data_path_template.format(
+            episode_chunk=self._episode_chunk(episode_index),
+            episode_index=episode_index,
+        )
+        return self.root / fpath
+
+    def _trajectory_for_episode(self, episode_index: int) -> Optional[np.ndarray]:
+        if episode_index in self._trajectory_cache:
+            return self._trajectory_cache[episode_index]
+
+        data_path = self._data_path_for_episode(episode_index)
+        if not data_path.is_file():
+            self._trajectory_cache[episode_index] = None
+            return None
+
+        try:
+            import pandas as pd
+
+            df = pd.read_parquet(data_path, columns=[self._trajectory_key])
+            values = np.asarray([np.asarray(v, dtype=np.float32) for v in df[self._trajectory_key].to_numpy()])
+            if values.ndim != 2 or len(values) == 0:
+                values = None
+        except Exception as exc:
+            print(f"Failed to load trajectory {self._trajectory_key} from {data_path}: {exc}")
+            values = None
+
+        self._trajectory_cache[episode_index] = values
+        return values
+
+    @staticmethod
+    def _trajectory_delta(traj: np.ndarray, source_fi: int, target_fi: int) -> float:
+        if source_fi >= len(traj) or target_fi >= len(traj):
+            return math.inf
+        return float(np.linalg.norm(traj[target_fi] - traj[source_fi]))
+
+    def _find_motion_start_frame(self, episode_index: int) -> int:
+        traj = self._trajectory_for_episode(episode_index)
+        if traj is None or len(traj) <= 1:
+            return 0
+
+        deltas = np.linalg.norm(traj - traj[0], axis=1)
+        moving = np.flatnonzero(deltas >= self._trajectory_motion_start_threshold)
+        if moving.size == 0:
+            return 0
+        return int(moving[0])
 
     # ---------- core decoding ----------
     def _decode_pair(
@@ -544,7 +631,21 @@ def _collate_fn_imagepair(batch, tokenize_func, tokenizer, source_transform, tar
     return return_dict
 
 
-def _load_single_dataset(repo_id, root, camera_key, cot_data=None, allowed_episode_indices=None, target_frame_offset=0, source_frame_stride=0):
+def _load_single_dataset(
+    repo_id,
+    root,
+    camera_key,
+    cot_data=None,
+    allowed_episode_indices=None,
+    target_frame_offset=0,
+    source_frame_stride=0,
+    min_source_frame_index=0,
+    trajectory_motion_filter=False,
+    trajectory_key="observation.state",
+    trajectory_motion_start_threshold=0.05,
+    trajectory_motion_start_padding=0,
+    min_trajectory_delta=0.0,
+):
     try:
         dataset = ImagePairDataset(
             root=root,
@@ -553,6 +654,12 @@ def _load_single_dataset(repo_id, root, camera_key, cot_data=None, allowed_episo
             allowed_episode_indices=allowed_episode_indices,
             target_frame_offset=target_frame_offset,
             source_frame_stride=source_frame_stride,
+            min_source_frame_index=min_source_frame_index,
+            trajectory_motion_filter=trajectory_motion_filter,
+            trajectory_key=trajectory_key,
+            trajectory_motion_start_threshold=trajectory_motion_start_threshold,
+            trajectory_motion_start_padding=trajectory_motion_start_padding,
+            min_trajectory_delta=min_trajectory_delta,
         )
         print(f"✓ Loaded dataset: {repo_id}")
         return repo_id, dataset
@@ -601,6 +708,22 @@ def get_train_datasets(data_args, tokenize_func, tokenizer, base_seed: int = 0):
     source_frame_stride = getattr(data_args, "source_frame_stride", 0)
     if source_frame_stride:
         print(f"Using source_frame_stride={source_frame_stride}")
+    min_source_frame_index = getattr(data_args, "min_source_frame_index", 0)
+    trajectory_motion_filter = getattr(data_args, "trajectory_motion_filter", False)
+    trajectory_key = getattr(data_args, "trajectory_key", "observation.state")
+    trajectory_motion_start_threshold = getattr(data_args, "trajectory_motion_start_threshold", 0.05)
+    trajectory_motion_start_padding = getattr(data_args, "trajectory_motion_start_padding", 0)
+    min_trajectory_delta = getattr(data_args, "min_trajectory_delta", 0.0)
+    if min_source_frame_index:
+        print(f"Skipping source frames before frame {min_source_frame_index}")
+    if trajectory_motion_filter:
+        print(
+            "Using trajectory_motion_filter: "
+            f"key={trajectory_key}, threshold={trajectory_motion_start_threshold}, "
+            f"padding={trajectory_motion_start_padding}"
+        )
+    if min_trajectory_delta:
+        print(f"Using min_trajectory_delta={min_trajectory_delta} with key={trajectory_key}")
 
     # Load datasets in parallel using ThreadPoolExecutor
     print(f"Loading {len(dataset_tasks)} datasets in parallel...")
@@ -609,7 +732,22 @@ def get_train_datasets(data_args, tokenize_func, tokenizer, base_seed: int = 0):
     with ThreadPoolExecutor(max_workers=min(32, len(dataset_tasks))) as executor:
         # Submit all tasks
         future_to_task = {
-            executor.submit(_load_single_dataset, repo_id, root, camera_key, cot_data, allowed_episode_indices, target_frame_offset, source_frame_stride): (repo_id, root, camera_key)
+            executor.submit(
+                _load_single_dataset,
+                repo_id,
+                root,
+                camera_key,
+                cot_data,
+                allowed_episode_indices,
+                target_frame_offset,
+                source_frame_stride,
+                min_source_frame_index,
+                trajectory_motion_filter,
+                trajectory_key,
+                trajectory_motion_start_threshold,
+                trajectory_motion_start_padding,
+                min_trajectory_delta,
+            ): (repo_id, root, camera_key)
             for repo_id, root, camera_key in dataset_tasks
         }
         

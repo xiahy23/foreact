@@ -11,9 +11,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import re
 import signal
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +51,23 @@ class ExperimentSpec:
     unfreeze_mllm: bool
     resume_from_checkpoint: str
     note: str
+    min_source_frame_index: int = 0
+    trajectory_motion_filter: bool = False
+    trajectory_motion_start_threshold: float = 0.05
+    trajectory_motion_start_padding: int = 0
+    min_trajectory_delta: float = 0.0
+
+    def key(self) -> str:
+        return "|".join(
+            [
+                self.scope,
+                self.note,
+                f"lr={self.learning_rate:g}",
+                f"stride={self.source_frame_stride}",
+                f"motion={int(self.trajectory_motion_filter)}",
+                f"mindelta={self.min_trajectory_delta:g}",
+            ]
+        )
 
 
 def run(
@@ -100,26 +119,22 @@ def next_fexp_number() -> int:
 
 
 def experiment_plan() -> list[ExperimentSpec]:
-    """Conservative grid: single tasks first, then combined data, then unfreeze runs."""
+    """Motion-focused grid for Aloha future-frame training."""
     pretrained = "./foreact-pretrained"
     strong_prior = "./checkpoints/F-exp06-unfreeze-mllm-10epoch/checkpoint-17690"
     return [
-        ExperimentSpec("banana", 1e-5, 5, 4, 4, 8.0, "constant_with_warmup", 0, False, pretrained, "banana_base_stride5"),
-        ExperimentSpec("cube", 1e-5, 5, 4, 4, 8.0, "constant_with_warmup", 0, False, pretrained, "cube_base_stride5"),
-        ExperimentSpec("mixed", 1e-5, 5, 4, 4, 8.0, "constant_with_warmup", 0, False, pretrained, "mixed_base_stride5"),
-        ExperimentSpec("mixed", 3e-5, 5, 4, 4, 8.0, "cosine_with_min_lr", 100, False, pretrained, "mixed_lr3e-5_stride5"),
-        ExperimentSpec("mixed", 5e-6, 3, 4, 4, 10.0, "cosine_with_min_lr", 100, False, pretrained, "mixed_lr5e-6_stride3"),
-        ExperimentSpec("banana", 3e-5, 3, 4, 4, 10.0, "cosine_with_min_lr", 100, False, pretrained, "banana_lr3e-5_stride3"),
-        ExperimentSpec("cube", 3e-5, 3, 4, 4, 10.0, "cosine_with_min_lr", 100, False, pretrained, "cube_lr3e-5_stride3"),
-        ExperimentSpec("mixed", 1e-5, 10, 8, 4, 10.0, "constant_with_warmup", 0, False, pretrained, "mixed_bs8_stride10"),
-        ExperimentSpec("banana", 1e-5, 10, 8, 4, 10.0, "constant_with_warmup", 0, False, pretrained, "banana_bs8_stride10"),
-        ExperimentSpec("cube", 1e-5, 10, 8, 4, 10.0, "constant_with_warmup", 0, False, pretrained, "cube_bs8_stride10"),
-        ExperimentSpec("mixed", 1e-5, 5, 2, 8, 8.0, "cosine_with_min_lr", 100, True, pretrained, "mixed_unfreeze_stride5"),
-        ExperimentSpec("banana", 1e-5, 5, 2, 8, 8.0, "cosine_with_min_lr", 100, True, pretrained, "banana_unfreeze_stride5"),
-        ExperimentSpec("cube", 1e-5, 5, 2, 8, 8.0, "cosine_with_min_lr", 100, True, pretrained, "cube_unfreeze_stride5"),
-        ExperimentSpec("mixed", 5e-6, 5, 2, 8, 8.0, "cosine_with_min_lr", 100, True, strong_prior, "mixed_prior_unfreeze_lr5e-6"),
-        ExperimentSpec("banana", 5e-6, 5, 2, 8, 8.0, "cosine_with_min_lr", 100, True, strong_prior, "banana_prior_unfreeze_lr5e-6"),
-        ExperimentSpec("cube", 5e-6, 5, 2, 8, 8.0, "cosine_with_min_lr", 100, True, strong_prior, "cube_prior_unfreeze_lr5e-6"),
+        ExperimentSpec("banana", 1e-5, 5, 4, 4, 8.0, "constant_with_warmup", 0, False, pretrained, "banana_motion_start_s5", trajectory_motion_filter=True, trajectory_motion_start_threshold=0.05, trajectory_motion_start_padding=5),
+        ExperimentSpec("cube", 1e-5, 5, 4, 4, 8.0, "constant_with_warmup", 0, False, pretrained, "cube_motion_start_s5", trajectory_motion_filter=True, trajectory_motion_start_threshold=0.05, trajectory_motion_start_padding=5),
+        ExperimentSpec("mixed", 1e-5, 5, 4, 4, 8.0, "constant_with_warmup", 0, False, pretrained, "mixed_motion_start_s5", trajectory_motion_filter=True, trajectory_motion_start_threshold=0.05, trajectory_motion_start_padding=5),
+        ExperimentSpec("banana", 1e-5, 5, 4, 4, 8.0, "constant_with_warmup", 0, False, pretrained, "banana_motion_delta005_s5", trajectory_motion_filter=True, trajectory_motion_start_threshold=0.05, trajectory_motion_start_padding=5, min_trajectory_delta=0.05),
+        ExperimentSpec("cube", 1e-5, 5, 4, 4, 8.0, "constant_with_warmup", 0, False, pretrained, "cube_motion_delta005_s5", trajectory_motion_filter=True, trajectory_motion_start_threshold=0.05, trajectory_motion_start_padding=5, min_trajectory_delta=0.05),
+        ExperimentSpec("mixed", 1e-5, 5, 4, 4, 8.0, "constant_with_warmup", 0, False, pretrained, "mixed_motion_delta005_s5", trajectory_motion_filter=True, trajectory_motion_start_threshold=0.05, trajectory_motion_start_padding=5, min_trajectory_delta=0.05),
+        ExperimentSpec("mixed", 3e-5, 5, 4, 4, 8.0, "cosine_with_min_lr", 100, False, pretrained, "mixed_motion_delta005_lr3e-5", trajectory_motion_filter=True, trajectory_motion_start_threshold=0.05, trajectory_motion_start_padding=5, min_trajectory_delta=0.05),
+        ExperimentSpec("mixed", 5e-6, 3, 4, 4, 10.0, "cosine_with_min_lr", 100, False, pretrained, "mixed_motion_delta005_s3", trajectory_motion_filter=True, trajectory_motion_start_threshold=0.05, trajectory_motion_start_padding=5, min_trajectory_delta=0.05),
+        ExperimentSpec("banana", 3e-5, 3, 4, 4, 10.0, "cosine_with_min_lr", 100, False, pretrained, "banana_motion_delta005_s3_lr3e-5", trajectory_motion_filter=True, trajectory_motion_start_threshold=0.05, trajectory_motion_start_padding=5, min_trajectory_delta=0.05),
+        ExperimentSpec("cube", 3e-5, 3, 4, 4, 10.0, "cosine_with_min_lr", 100, False, pretrained, "cube_motion_delta005_s3_lr3e-5", trajectory_motion_filter=True, trajectory_motion_start_threshold=0.05, trajectory_motion_start_padding=5, min_trajectory_delta=0.05),
+        ExperimentSpec("mixed", 1e-5, 5, 2, 8, 8.0, "cosine_with_min_lr", 100, True, pretrained, "mixed_motion_unfreeze_s5", trajectory_motion_filter=True, trajectory_motion_start_threshold=0.05, trajectory_motion_start_padding=5, min_trajectory_delta=0.05),
+        ExperimentSpec("mixed", 5e-6, 5, 2, 8, 8.0, "cosine_with_min_lr", 100, True, strong_prior, "mixed_prior_motion_unfreeze_lr5e-6", trajectory_motion_filter=True, trajectory_motion_start_threshold=0.05, trajectory_motion_start_padding=5, min_trajectory_delta=0.05),
     ]
 
 
@@ -167,6 +182,12 @@ def config_for(exp_name: str, spec: ExperimentSpec, data_path: Path) -> dict:
         "balance_datasets": False,
         "target_frame_offset": 30,
         "source_frame_stride": spec.source_frame_stride,
+        "min_source_frame_index": spec.min_source_frame_index,
+        "trajectory_motion_filter": spec.trajectory_motion_filter,
+        "trajectory_key": "observation.state",
+        "trajectory_motion_start_threshold": spec.trajectory_motion_start_threshold,
+        "trajectory_motion_start_padding": spec.trajectory_motion_start_padding,
+        "min_trajectory_delta": spec.min_trajectory_delta,
         "per_device_train_batch_size": spec.per_device_train_batch_size,
         "gradient_accumulation_steps": spec.gradient_accumulation_steps,
         "learning_rate": spec.learning_rate,
@@ -211,7 +232,7 @@ def write_experiment_files(exp_num: int, spec: ExperimentSpec) -> tuple[str, Pat
                 f"cd {PROJECT_ROOT}",
                 "export FORCE_VIDEO_BACKEND=pyav",
                 "export WANDB_MODE=offline",
-                'NUM_GPUS="${1:-8}"',
+                'NUM_GPUS="${1:-4}"',
                 f'conda run --no-capture-output -n foreact accelerate launch --num_processes "$NUM_GPUS" --main_process_port {26000 + exp_num} --mixed_precision bf16 train.py --config_file "{config_path.name}"',
                 "",
             ]
@@ -293,7 +314,7 @@ def kill_gpu_jobs() -> None:
             pass
 
 
-def launch_training(exp_name: str, config_path: Path, num_gpus: int, conda_env: str, exp_num: int) -> int:
+def launch_training(exp_name: str, config_path: Path, num_gpus: int, conda_env: str, exp_num: int, cuda_devices: str | None = None) -> int:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / f"{exp_name}.log"
     env = os.environ.copy()
@@ -301,6 +322,8 @@ def launch_training(exp_name: str, config_path: Path, num_gpus: int, conda_env: 
     env["WANDB_MODE"] = env.get("WANDB_MODE", "offline")
     env["HF_HUB_DOWNLOAD_TIMEOUT"] = env.get("HF_HUB_DOWNLOAD_TIMEOUT", "120")
     env["HF_HUB_ETAG_TIMEOUT"] = env.get("HF_HUB_ETAG_TIMEOUT", "30")
+    if cuda_devices:
+        env["CUDA_VISIBLE_DEVICES"] = cuda_devices
     cmd = [
         "conda",
         "run",
@@ -319,11 +342,72 @@ def launch_training(exp_name: str, config_path: Path, num_gpus: int, conda_env: 
         "--config_file",
         config_path.name,
     ]
-    print(f"[runner] Launching {exp_name} on {num_gpus} GPU(s). Log: {log_path}", flush=True)
+    device_msg = f" CUDA_VISIBLE_DEVICES={cuda_devices}" if cuda_devices else ""
+    print(f"[runner] Launching {exp_name} on {num_gpus} GPU(s).{device_msg} Log: {log_path}", flush=True)
     with log_path.open("a", encoding="utf-8") as log:
-        log.write(f"\n\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} launch {' '.join(cmd)} =====\n")
+        log.write(f"\n\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} launch{device_msg} {' '.join(cmd)} =====\n")
         proc = subprocess.Popen(cmd, cwd=str(PROJECT_ROOT), env=env, stdout=log, stderr=subprocess.STDOUT, text=True)
         return proc.wait()
+
+
+def gpu_groups(num_gpus: int, parallel_jobs: int, gpus_per_job: int) -> list[str]:
+    count = max(num_gpus, parallel_jobs * gpus_per_job)
+    groups = []
+    for i in range(parallel_jobs):
+        start = i * gpus_per_job
+        stop = min(start + gpus_per_job, count)
+        groups.append(",".join(str(idx) for idx in range(start, stop)))
+    return [group for group in groups if group]
+
+
+def run_jobs_parallel(jobs: list[tuple[int, str, Path, str]], args, num_gpus: int) -> None:
+    groups = gpu_groups(num_gpus, args.parallel_jobs, args.gpus_per_job)
+    if not groups:
+        return
+
+    job_queue: queue.Queue[tuple[int, str, Path, str]] = queue.Queue()
+    for job in jobs:
+        job_queue.put(job)
+
+    state_lock = threading.Lock()
+
+    def worker(worker_idx: int, devices: str) -> None:
+        while True:
+            try:
+                exp_num, exp_name, config_path, spec_key = job_queue.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                code = launch_training(
+                    exp_name,
+                    config_path,
+                    len(devices.split(",")),
+                    args.conda_env,
+                    exp_num,
+                    cuda_devices=devices,
+                )
+                with state_lock:
+                    state = load_state()
+                    record = {"name": exp_name, "spec_key": spec_key, "time": time.time(), "worker": worker_idx, "cuda_visible_devices": devices}
+                    if code == 0:
+                        state.setdefault("completed", []).append(exp_name)
+                        state.setdefault("completed_specs", []).append(spec_key)
+                        state.setdefault("completed_records", []).append(record)
+                    else:
+                        record["exit_code"] = code
+                        state.setdefault("failed", []).append(record)
+                    save_state(state)
+            finally:
+                job_queue.task_done()
+                time.sleep(10)
+
+    threads = []
+    for idx, devices in enumerate(groups):
+        thread = threading.Thread(target=worker, args=(idx, devices), daemon=False)
+        thread.start()
+        threads.append(thread)
+    for thread in threads:
+        thread.join()
 
 
 def fallback_starvla(conda_env: str) -> int:
@@ -344,6 +428,8 @@ def main() -> int:
     parser.add_argument("--fallback-conda-env", default="starVLA")
     parser.add_argument("--num-gpus", type=int, default=0, help="0 means auto-detect, falling back to --default-gpus.")
     parser.add_argument("--default-gpus", type=int, default=8)
+    parser.add_argument("--parallel-jobs", type=int, default=2)
+    parser.add_argument("--gpus-per-job", type=int, default=4)
     parser.add_argument("--max-experiments", type=int, default=0, help="0 runs the full built-in plan.")
     parser.add_argument("--kill-existing-gpu-jobs", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--idle-restart-seconds", type=int, default=60)
@@ -359,24 +445,23 @@ def main() -> int:
     if args.kill_existing_gpu_jobs:
         kill_gpu_jobs()
 
+    jobs: list[tuple[int, str, Path, str]] = []
+    completed_specs = set(state.get("completed_specs", []))
     for spec in plan:
+        spec_key = spec.key()
+        if spec_key in completed_specs:
+            continue
         exp_num = next_fexp_number()
         exp_name, config_path, script_path = write_experiment_files(exp_num, spec)
-        if exp_name in state.get("completed", []):
-            continue
         commit_paths(
             f"[{exp_name}] add aloha training config",
             [config_path, script_path],
         )
-        num_gpus = args.num_gpus if args.num_gpus > 0 else detect_num_gpus(args.default_gpus)
-        code = launch_training(exp_name, config_path, num_gpus, args.conda_env, exp_num)
-        state = load_state()
-        if code == 0:
-            state.setdefault("completed", []).append(exp_name)
-        else:
-            state.setdefault("failed", []).append({"name": exp_name, "exit_code": code, "time": time.time()})
-        save_state(state)
-        time.sleep(20)
+        jobs.append((exp_num, exp_name, config_path, spec_key))
+
+    num_gpus = args.num_gpus if args.num_gpus > 0 else detect_num_gpus(args.default_gpus)
+    if jobs:
+        run_jobs_parallel(jobs, args, num_gpus)
 
     while True:
         code = fallback_starvla(args.fallback_conda_env)

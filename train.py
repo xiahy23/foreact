@@ -60,6 +60,12 @@ class DataArguments:
     subtask_data_path: str = ""
     target_frame_offset: int = 0  # >0: fixed offset (e.g. 6 = predict 6 frames ahead); 0: use subtask/cot logic
     source_frame_stride: int = 0  # >0: sample fixed-offset source frames every N frames; 0: use dataset fps
+    min_source_frame_index: int = 0  # skip source frames before this absolute frame index
+    trajectory_motion_filter: bool = False  # skip each episode's low-motion prefix using parquet trajectory
+    trajectory_key: str = "observation.state"
+    trajectory_motion_start_threshold: float = 0.05
+    trajectory_motion_start_padding: int = 0
+    min_trajectory_delta: float = 0.0  # skip pairs whose trajectory change from source to target is too small
     custom_data_path: str = ""  # path to custom dataset dir (source/target image pairs + captions.json)
     balance_datasets: bool = False  # when True, use BalancedConcatDataset for 1:1 ratio
 
