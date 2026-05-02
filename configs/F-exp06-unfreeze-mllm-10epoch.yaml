@@ -1,0 +1,40 @@
+_gradient_checkpointing: false
+balance_datasets: true
+camera_key: observation.images.image_0
+cot_json_path: ''
+custom_data_path: ./datasets/all_eval
+data_path: ./datasets
+dataloader_num_workers: 16
+deepspeed: configs/zero1.json
+diffusion_model_id: /media/raid/workspace/xiahongyu/.cache/hub/models--Efficient-Large-Model--Sana_1600M_512px_diffusers/snapshots/e58e81ec2dc4faf305122872313884df3afeffa8
+filtered_episodes_path: ''
+gradient_accumulation_steps: 4
+in_channels: 32
+learning_rate: 0.00001
+lr_scheduler_type: constant_with_warmup
+max_steps: -1
+mllm_id: /media/raid/workspace/xiahongyu/.cache/hub/models--google--gemma-2-2b-it/snapshots/299a8560bedf22ed1c72a8a11e7dce4a7f9f51f8
+modules_to_freeze:
+- vae
+noise_scheduler_id: /media/raid/workspace/xiahongyu/.cache/hub/models--Efficient-Large-Model--Sana_1600M_512px_diffusers/snapshots/e58e81ec2dc4faf305122872313884df3afeffa8
+num_train_epochs: 10.0
+output_dir: ./checkpoints
+overwrite_output_dir: false
+per_device_train_batch_size: 8
+report_to: wandb
+resume_from_checkpoint: ./checkpoints/F-exp05-default-pretrained-5epoch
+run_name: F-exp06-unfreeze-mllm-10epoch
+save_strategy: epoch
+save_total_limit: 10
+scheduler_id: /media/raid/workspace/xiahongyu/.cache/hub/models--Efficient-Large-Model--Sana_1600M_512px_diffusers/snapshots/e58e81ec2dc4faf305122872313884df3afeffa8
+subtask_data_path: ''
+system_prompt: You are a robot and should focus on your actions. Generate a new image
+  that meets the user's instruction while maintaining consistency with the original
+  input where appropriate.
+target_frame_offset: 6
+target_image_size:
+- 480
+- 640
+vae_downsample_f: 32
+vae_id: /media/raid/workspace/xiahongyu/.cache/hub/models--Efficient-Large-Model--Sana_1600M_512px_diffusers/snapshots/e58e81ec2dc4faf305122872313884df3afeffa8
+warmup_steps: 0
