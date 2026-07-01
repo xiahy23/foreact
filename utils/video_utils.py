@@ -1,17 +1,100 @@
 import av
+import atexit
 import glob
 import importlib
 import logging
+import os
 import pyarrow as pa
 import torch
 import torchvision
 import warnings
 
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datasets.features.features import register_feature
 from pathlib import Path
 from typing import Any, ClassVar
 from PIL import Image
+
+
+_PYAV_CONTAINER_CACHE: OrderedDict[str, tuple[Any, Any, float]] = OrderedDict()
+_PYAV_CONTAINER_CACHE_PID = os.getpid()
+
+
+def _pyav_cache_enabled() -> bool:
+    return os.environ.get("FOREACT_PYAV_CONTAINER_CACHE", "1").lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+
+
+def _pyav_cache_size() -> int:
+    try:
+        return max(0, int(os.environ.get("FOREACT_PYAV_CONTAINER_CACHE_SIZE", "256")))
+    except ValueError:
+        return 256
+
+
+def _close_pyav_cache() -> None:
+    while _PYAV_CONTAINER_CACHE:
+        _, (container, _, _) = _PYAV_CONTAINER_CACHE.popitem()
+        try:
+            container.close()
+        except Exception:
+            pass
+
+
+atexit.register(_close_pyav_cache)
+
+
+def _get_cached_pyav_container(video_path: str):
+    global _PYAV_CONTAINER_CACHE_PID
+
+    current_pid = os.getpid()
+    if _PYAV_CONTAINER_CACHE_PID != current_pid:
+        _PYAV_CONTAINER_CACHE.clear()
+        _PYAV_CONTAINER_CACHE_PID = current_pid
+
+    if not _pyav_cache_enabled() or _pyav_cache_size() == 0:
+        container = av.open(video_path)
+        stream = container.streams.video[0]
+        stream.thread_type = "AUTO"
+        return container, stream, float(stream.time_base), False
+
+    cached = _PYAV_CONTAINER_CACHE.get(video_path)
+    if cached is not None:
+        _PYAV_CONTAINER_CACHE.move_to_end(video_path)
+        container, stream, time_base = cached
+        return container, stream, time_base, True
+
+    container = av.open(video_path)
+    stream = container.streams.video[0]
+    stream.thread_type = "AUTO"
+    cached = (container, stream, float(stream.time_base))
+    _PYAV_CONTAINER_CACHE[video_path] = cached
+
+    max_size = _pyav_cache_size()
+    while len(_PYAV_CONTAINER_CACHE) > max_size:
+        _, (old_container, _, _) = _PYAV_CONTAINER_CACHE.popitem(last=False)
+        try:
+            old_container.close()
+        except Exception:
+            pass
+
+    container, stream, time_base = cached
+    return container, stream, time_base, True
+
+
+def _drop_cached_pyav_container(video_path: str) -> None:
+    cached = _PYAV_CONTAINER_CACHE.pop(video_path, None)
+    if cached is None:
+        return
+    container, _, _ = cached
+    try:
+        container.close()
+    except Exception:
+        pass
 
 
 def get_safe_default_codec():
@@ -78,56 +161,54 @@ def decode_video_frames_pyav(
     For each requested timestamp, seeks to the nearest key frame and scans forward
     to find the closest frame within `tolerance_s`.
     """
-    import av as _av
     video_path = str(video_path)
     timestamps = sorted(timestamps)
 
     frames_out = {}  # ts -> tensor
-    remaining = list(timestamps)
-
-    container = _av.open(video_path)
-    stream = container.streams.video[0]
-    stream.thread_type = "AUTO"
-
-    fps_num = stream.average_rate
-    time_base = float(stream.time_base)
+    container, stream, time_base, cached = _get_cached_pyav_container(video_path)
 
     # Process each timestamp via seek + scan
-    for ts in timestamps:
-        if ts in frames_out:
-            continue
-        # Seek to slightly before the requested timestamp
-        seek_ts = max(0, int((ts - tolerance_s) / time_base))
-        container.seek(seek_ts, stream=stream, backward=True, any_frame=False)
+    try:
+        for ts in timestamps:
+            if ts in frames_out:
+                continue
+            # Seek to slightly before the requested timestamp
+            seek_ts = max(0, int((ts - tolerance_s) / time_base))
+            container.seek(seek_ts, stream=stream, backward=True, any_frame=False)
 
-        best_frame = None
-        best_diff = float("inf")
+            best_frame = None
+            best_diff = float("inf")
 
-        for packet in container.demux(stream):
-            for frame in packet.decode():
-                if frame.pts is None:
-                    continue
-                frame_ts = float(frame.pts) * time_base
-                diff = abs(frame_ts - ts)
-                if diff < best_diff:
-                    best_diff = diff
-                    best_frame = frame
-                # Stop scanning once we pass the target timestamp by more than tolerance
-                if frame_ts > ts + tolerance_s and best_frame is not None:
+            for packet in container.demux(stream):
+                for frame in packet.decode():
+                    if frame.pts is None:
+                        continue
+                    frame_ts = float(frame.pts) * time_base
+                    diff = abs(frame_ts - ts)
+                    if diff < best_diff:
+                        best_diff = diff
+                        best_frame = frame
+                    # Stop scanning once we pass the target timestamp by more than tolerance
+                    if frame_ts > ts + tolerance_s and best_frame is not None:
+                        break
+                if best_frame is not None and float(best_frame.pts) * time_base > ts + tolerance_s:
                     break
-            if best_frame is not None and float(best_frame.pts) * time_base > ts + tolerance_s:
-                break
 
-        if best_frame is not None:
-            arr = best_frame.to_ndarray(format="rgb24")  # (H, W, 3) uint8
-            tensor = torch.from_numpy(arr).permute(2, 0, 1)  # (3, H, W)
-            frames_out[ts] = tensor
-        else:
-            raise RuntimeError(
-                f"Could not find frame at timestamp {ts:.4f}s in {video_path}"
-            )
-
-    container.close()
+            if best_frame is not None:
+                arr = best_frame.to_ndarray(format="rgb24")  # (H, W, 3) uint8
+                tensor = torch.from_numpy(arr).permute(2, 0, 1)  # (3, H, W)
+                frames_out[ts] = tensor
+            else:
+                raise RuntimeError(
+                    f"Could not find frame at timestamp {ts:.4f}s in {video_path}"
+                )
+    except Exception:
+        if cached:
+            _drop_cached_pyav_container(video_path)
+        raise
+    finally:
+        if not cached:
+            container.close()
 
     # Return in the original (unsorted) order
     result = torch.stack([frames_out[ts] for ts in timestamps])

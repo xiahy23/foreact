@@ -30,11 +30,14 @@ class ImagePairDataset(Dataset):
         target_frame_offset: int = 0,
         source_frame_stride: int = 0,
         min_source_frame_index: int = 0,
+        clamp_target_frame_to_last: bool = False,
         trajectory_motion_filter: bool = False,
         trajectory_key: str = "observation.state",
         trajectory_motion_start_threshold: float = 0.05,
         trajectory_motion_start_padding: int = 0,
         min_trajectory_delta: float = 0.0,
+        frame_cache_root: Optional[str | Path] = None,
+        frame_cache_ext: str = "jpg",
     ) -> None:
         super().__init__()
         self.root = Path(root)
@@ -64,11 +67,14 @@ class ImagePairDataset(Dataset):
         self._target_frame_offset = target_frame_offset
         self._source_frame_stride = int(source_frame_stride) if source_frame_stride else 0
         self._min_source_frame_index = max(0, int(min_source_frame_index))
+        self._clamp_target_frame_to_last = bool(clamp_target_frame_to_last)
         self._trajectory_motion_filter = bool(trajectory_motion_filter)
         self._trajectory_key = trajectory_key
         self._trajectory_motion_start_threshold = float(trajectory_motion_start_threshold)
         self._trajectory_motion_start_padding = max(0, int(trajectory_motion_start_padding))
         self._min_trajectory_delta = max(0.0, float(min_trajectory_delta))
+        self._frame_cache_root = Path(frame_cache_root) if frame_cache_root else None
+        self._frame_cache_ext = frame_cache_ext.lstrip(".")
         self._trajectory_cache: Dict[int, Optional[np.ndarray]] = {}
         self._motion_start_by_episode: Dict[int, int] = {}
 
@@ -124,7 +130,9 @@ class ImagePairDataset(Dataset):
                         continue
                     target_fi = fi + self._target_frame_offset
                     if target_fi >= length:
-                        continue  # strict: skip when target frame doesn't exist
+                        if not self._clamp_target_frame_to_last:
+                            continue  # strict: skip when target frame doesn't exist
+                        target_fi = length - 1
                     if (
                         traj is not None
                         and target_fi < len(traj)
@@ -165,8 +173,7 @@ class ImagePairDataset(Dataset):
     def __len__(self) -> int:
         return len(self._index)
 
-    @staticmethod
-    def _episode_caption(ep: Dict[str, Any]) -> str:
+    def _episode_caption(self, ep: Dict[str, Any]) -> str:
         tasks = ep.get("tasks", None)
         if isinstance(tasks, list):
             caption = "; ".join([str(t) for t in tasks]) if len(tasks) > 0 else ""
@@ -210,6 +217,18 @@ class ImagePairDataset(Dataset):
             episode_index=episode_index,
         )
         return self.root / fpath
+
+    def _frame_cache_path(self, episode_index: int, frame_index: int) -> Path:
+        if self._frame_cache_root is None:
+            raise RuntimeError("frame_cache_root is not configured.")
+        chunk = self._episode_chunk(episode_index)
+        return (
+            self._frame_cache_root
+            / f"chunk-{chunk:03d}"
+            / self.camera_key
+            / f"episode_{episode_index:06d}"
+            / f"frame_{frame_index:06d}.{self._frame_cache_ext}"
+        )
 
     def _trajectory_for_episode(self, episode_index: int) -> Optional[np.ndarray]:
         if episode_index in self._trajectory_cache:
@@ -275,14 +294,22 @@ class ImagePairDataset(Dataset):
         ts_source = local_fi / float(self.fps)
         ts_target = target_fi / float(self.fps)
 
-        video_path = self._video_path_for_episode(episode_index)
-        source_img, target_img = self._decode_pair(video_path, ts_source, ts_target)
+        if self._frame_cache_root is not None:
+            source_path = self._frame_cache_path(episode_index, local_fi)
+            target_path = self._frame_cache_path(episode_index, target_fi)
+            source_img = Image.open(source_path).convert("RGB")
+            target_img = Image.open(target_path).convert("RGB")
+        else:
+            video_path = self._video_path_for_episode(episode_index)
+            source_img, target_img = self._decode_pair(video_path, ts_source, ts_target)
+            source_img = self._to_pil(source_img)
+            target_img = self._to_pil(target_img)
 
         caption = subtask_name if subtask_name else self._episode_caption(ep)
 
         return {
-            "source_image": self._to_pil(source_img),
-            "target_image": self._to_pil(target_img),
+            "source_image": source_img,
+            "target_image": target_img,
             "caption": caption,
         }
 
@@ -444,7 +471,7 @@ class CustomVideoDataset(Dataset):
                 task_info.json
                 ...
 
-    Each video is an episode. Source frames are sampled every `fps` frames.
+    Each video is an episode. Source frames are sampled every `source_frame_stride` frames.
     Target frame = source frame + target_frame_offset (clamped to video length).
     """
 
@@ -465,8 +492,8 @@ class CustomVideoDataset(Dataset):
         self.tolerance_s = tolerance_s
         self.video_backend = video_backend if video_backend else get_safe_default_codec()
 
-        # Build index: (video_path, source_fi, target_fi, task_name)
-        self._index: List[Tuple[str, int, int, str]] = []
+        # Build index: (video_path, source_fi, target_fi, task_name, video_fps)
+        self._index: List[Tuple[str, int, int, str, float]] = []
 
         for task_dir in sorted(self.root.iterdir()):
             if not task_dir.is_dir():
@@ -484,7 +511,7 @@ class CustomVideoDataset(Dataset):
             video_files = sorted(glob.glob(str(task_dir / "*.mp4")))
             for video_path in video_files:
                 # Probe video to get total number of frames
-                total_frames = self._get_video_frame_count(video_path)
+                total_frames, video_fps = self._probe_video(video_path, fallback_fps=self.fps)
                 if total_frames <= 1:
                     continue
 
@@ -492,7 +519,7 @@ class CustomVideoDataset(Dataset):
                     target_fi = fi + self._target_frame_offset
                     if target_fi >= total_frames:
                         continue
-                    self._index.append((video_path, fi, target_fi, task_name))
+                    self._index.append((video_path, fi, target_fi, task_name, video_fps))
 
         if len(self._index) == 0:
             raise RuntimeError(f"No samples loaded from CustomVideoDataset at {self.root}")
@@ -500,14 +527,20 @@ class CustomVideoDataset(Dataset):
 
     @staticmethod
     def _get_video_frame_count(video_path: str) -> int:
-        """Get total frame count by probing with torchvision or ffprobe."""
+        """Get total frame count by probing with torchvision, ffprobe, or PyAV."""
+        total_frames, _ = CustomVideoDataset._probe_video(video_path)
+        return total_frames
+
+    @staticmethod
+    def _probe_video(video_path: str, fallback_fps: float = 5.0) -> Tuple[int, float]:
+        """Get frame count and FPS without assuming the custom video's sampling rate."""
         try:
             from torchvision.io import VideoReader
             reader = VideoReader(video_path, "video")
             metadata = reader.get_metadata()
             duration = metadata["video"]["duration"][0]
             fps = metadata["video"]["fps"][0]
-            return int(duration * fps)
+            return int(duration * fps), float(fps)
         except Exception:
             pass
         # Fallback: ffprobe
@@ -519,9 +552,34 @@ class CustomVideoDataset(Dataset):
                  "-of", "csv=p=0", video_path],
                 capture_output=True, text=True, timeout=30,
             )
-            return int(result.stdout.strip())
+            total_frames = int(result.stdout.strip())
+            fps_result = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=avg_frame_rate",
+                 "-of", "csv=p=0", video_path],
+                capture_output=True, text=True, timeout=30,
+            )
+            fps_text = fps_result.stdout.strip()
+            if "/" in fps_text:
+                num, den = fps_text.split("/", 1)
+                fps = float(num) / float(den)
+            else:
+                fps = float(fps_text)
+            return total_frames, fps
         except Exception:
-            return 0
+            pass
+        try:
+            import av
+
+            with av.open(video_path) as container:
+                stream = container.streams.video[0]
+                fps = float(stream.average_rate) if stream.average_rate else float(fallback_fps)
+                total_frames = int(stream.frames) if stream.frames else 0
+                if total_frames <= 0:
+                    total_frames = sum(1 for _ in container.decode(stream))
+                return total_frames, fps
+        except Exception:
+            return 0, float(fallback_fps)
 
     def __len__(self) -> int:
         return len(self._index)
@@ -529,9 +587,9 @@ class CustomVideoDataset(Dataset):
     _to_pil = v2.ToPILImage()
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-        video_path, source_fi, target_fi, task_name = self._index[idx]
-        ts_source = source_fi / float(self.fps)
-        ts_target = target_fi / float(self.fps)
+        video_path, source_fi, target_fi, task_name, video_fps = self._index[idx]
+        ts_source = source_fi / float(video_fps)
+        ts_target = target_fi / float(video_fps)
 
         frames = decode_video_frames(
             video_path,
@@ -640,11 +698,14 @@ def _load_single_dataset(
     target_frame_offset=0,
     source_frame_stride=0,
     min_source_frame_index=0,
+    clamp_target_frame_to_last=False,
     trajectory_motion_filter=False,
     trajectory_key="observation.state",
     trajectory_motion_start_threshold=0.05,
     trajectory_motion_start_padding=0,
     min_trajectory_delta=0.0,
+    frame_cache_root=None,
+    frame_cache_ext="jpg",
 ):
     try:
         dataset = ImagePairDataset(
@@ -655,11 +716,14 @@ def _load_single_dataset(
             target_frame_offset=target_frame_offset,
             source_frame_stride=source_frame_stride,
             min_source_frame_index=min_source_frame_index,
+            clamp_target_frame_to_last=clamp_target_frame_to_last,
             trajectory_motion_filter=trajectory_motion_filter,
             trajectory_key=trajectory_key,
             trajectory_motion_start_threshold=trajectory_motion_start_threshold,
             trajectory_motion_start_padding=trajectory_motion_start_padding,
             min_trajectory_delta=min_trajectory_delta,
+            frame_cache_root=frame_cache_root,
+            frame_cache_ext=frame_cache_ext,
         )
         print(f"✓ Loaded dataset: {repo_id}")
         return repo_id, dataset
@@ -683,14 +747,26 @@ def get_train_datasets(data_args, tokenize_func, tokenizer, base_seed: int = 0):
                 os.path.join(data_path, dir_name),
                 camera_key,
             ))
-    # Load filtered episode indices if specified
+    # Load filtered episode indices if specified. Backward compatible formats:
+    #   [0, 1, 2]                                  -> same filter for all datasets
+    #   {"dataset_a": [0, 1], "dataset_b": [3, 4]} -> per-dataset filters
     allowed_episode_indices = None
+    allowed_episode_indices_by_repo = {}
     filtered_episodes_path = getattr(data_args, "filtered_episodes_path", None)
     if filtered_episodes_path and Path(filtered_episodes_path).is_file():
-        print(f"Loading filtered episode list from {filtered_episodes_path} ...")
+        print(f"Loading filtered episode filter from {filtered_episodes_path} ...")
         with open(filtered_episodes_path, "r", encoding="utf-8") as f:
-            allowed_episode_indices = set(json.load(f))
-        print(f"Filtering to {len(allowed_episode_indices)} allowed episodes")
+            filtered_episodes = json.load(f)
+        if isinstance(filtered_episodes, dict):
+            allowed_episode_indices_by_repo = {
+                str(repo_id): set(indices)
+                for repo_id, indices in filtered_episodes.items()
+            }
+            for repo_id, indices in sorted(allowed_episode_indices_by_repo.items()):
+                print(f"Filtering {repo_id} to {len(indices)} allowed episodes")
+        else:
+            allowed_episode_indices = set(filtered_episodes)
+            print(f"Filtering all datasets to {len(allowed_episode_indices)} allowed episodes")
 
     # Load COT subtask data if specified
     cot_data = None
@@ -709,6 +785,7 @@ def get_train_datasets(data_args, tokenize_func, tokenizer, base_seed: int = 0):
     if source_frame_stride:
         print(f"Using source_frame_stride={source_frame_stride}")
     min_source_frame_index = getattr(data_args, "min_source_frame_index", 0)
+    clamp_target_frame_to_last = getattr(data_args, "clamp_target_frame_to_last", False)
     trajectory_motion_filter = getattr(data_args, "trajectory_motion_filter", False)
     trajectory_key = getattr(data_args, "trajectory_key", "observation.state")
     trajectory_motion_start_threshold = getattr(data_args, "trajectory_motion_start_threshold", 0.05)
@@ -716,6 +793,8 @@ def get_train_datasets(data_args, tokenize_func, tokenizer, base_seed: int = 0):
     min_trajectory_delta = getattr(data_args, "min_trajectory_delta", 0.0)
     if min_source_frame_index:
         print(f"Skipping source frames before frame {min_source_frame_index}")
+    if clamp_target_frame_to_last:
+        print("Clamping out-of-range target frames to each episode's last frame")
     if trajectory_motion_filter:
         print(
             "Using trajectory_motion_filter: "
@@ -724,38 +803,52 @@ def get_train_datasets(data_args, tokenize_func, tokenizer, base_seed: int = 0):
         )
     if min_trajectory_delta:
         print(f"Using min_trajectory_delta={min_trajectory_delta} with key={trajectory_key}")
+    frame_cache_root = getattr(data_args, "frame_cache_root", "")
+    frame_cache_ext = getattr(data_args, "frame_cache_ext", "jpg")
+    if frame_cache_root:
+        print(f"Using frame cache root: {frame_cache_root} (*.{frame_cache_ext})")
 
     # Load datasets in parallel using ThreadPoolExecutor
     print(f"Loading {len(dataset_tasks)} datasets in parallel...")
     start_time = time.time()
-    
-    with ThreadPoolExecutor(max_workers=min(32, len(dataset_tasks))) as executor:
-        # Submit all tasks
-        future_to_task = {
-            executor.submit(
-                _load_single_dataset,
-                repo_id,
-                root,
-                camera_key,
-                cot_data,
-                allowed_episode_indices,
-                target_frame_offset,
-                source_frame_stride,
-                min_source_frame_index,
-                trajectory_motion_filter,
-                trajectory_key,
-                trajectory_motion_start_threshold,
-                trajectory_motion_start_padding,
-                min_trajectory_delta,
-            ): (repo_id, root, camera_key)
-            for repo_id, root, camera_key in dataset_tasks
-        }
-        
-        # Collect results as they complete
-        for future in as_completed(future_to_task):
-            repo_id, dataset = future.result()
-            if dataset is not None:
-                train_datasets[repo_id] = dataset
+
+    if len(dataset_tasks) > 0:
+        with ThreadPoolExecutor(max_workers=min(32, len(dataset_tasks))) as executor:
+            # Submit all tasks
+            future_to_task = {
+                executor.submit(
+                    _load_single_dataset,
+                    repo_id,
+                    root,
+                    camera_key,
+                    cot_data,
+                    allowed_episode_indices_by_repo.get(repo_id, allowed_episode_indices),
+                    target_frame_offset,
+                    source_frame_stride,
+                    min_source_frame_index,
+                    clamp_target_frame_to_last,
+                    trajectory_motion_filter,
+                    trajectory_key,
+                    trajectory_motion_start_threshold,
+                    trajectory_motion_start_padding,
+                    min_trajectory_delta,
+                    (
+                        os.path.join(frame_cache_root, repo_id)
+                        if frame_cache_root
+                        else None
+                    ),
+                    frame_cache_ext,
+                ): (repo_id, root, camera_key)
+                for repo_id, root, camera_key in dataset_tasks
+            }
+
+            # Collect results as they complete
+            for future in as_completed(future_to_task):
+                repo_id, dataset = future.result()
+                if dataset is not None:
+                    train_datasets[repo_id] = dataset
+    else:
+        print(f"No LeRobot-style datasets found under {data_path}; continuing with optional custom datasets.")
     
     elapsed_time = time.time() - start_time
     print(f"Loaded {len(train_datasets)}/{len(dataset_tasks)} datasets in {elapsed_time:.2f} seconds")

@@ -61,6 +61,7 @@ class DataArguments:
     target_frame_offset: int = 0  # >0: fixed offset (e.g. 6 = predict 6 frames ahead); 0: use subtask/cot logic
     source_frame_stride: int = 0  # >0: sample fixed-offset source frames every N frames; 0: use dataset fps
     min_source_frame_index: int = 0  # skip source frames before this absolute frame index
+    clamp_target_frame_to_last: bool = False  # include tail source frames by clamping target to episode's last frame
     trajectory_motion_filter: bool = False  # skip each episode's low-motion prefix using parquet trajectory
     trajectory_key: str = "observation.state"
     trajectory_motion_start_threshold: float = 0.05
@@ -68,6 +69,8 @@ class DataArguments:
     min_trajectory_delta: float = 0.0  # skip pairs whose trajectory change from source to target is too small
     custom_data_path: str = ""  # path to custom dataset dir (source/target image pairs + captions.json)
     balance_datasets: bool = False  # when True, use BalancedConcatDataset for 1:1 ratio
+    frame_cache_root: str = ""  # optional decoded frame cache root, organized by dataset/camera/episode
+    frame_cache_ext: str = "jpg"
 
 
 @dataclass
@@ -89,6 +92,7 @@ class TrainingArguments(transformers.TrainingArguments):
     save_steps: int = 1000
     save_total_limit: int = 1000
     restore_callback_states_from_checkpoint: bool = True
+    save_final_checkpoint: bool = False
     seed: int = 42
     bf16: bool = True
     tf32: bool = True
@@ -253,3 +257,14 @@ if __name__ == "__main__":
             last_checkpoint = get_last_checkpoint(training_args.output_dir)
 
         trainer.train(resume_from_checkpoint=last_checkpoint)
+
+    if training_args.save_final_checkpoint:
+        final_checkpoint_dir = os.path.join(
+            training_args.output_dir, f"checkpoint-{trainer.state.global_step}"
+        )
+        trainer.save_model(final_checkpoint_dir)
+        if trainer.is_world_process_zero():
+            trainer.state.save_to_json(
+                os.path.join(final_checkpoint_dir, "trainer_state.json")
+            )
+            print(f"Saved final checkpoint to {final_checkpoint_dir}")

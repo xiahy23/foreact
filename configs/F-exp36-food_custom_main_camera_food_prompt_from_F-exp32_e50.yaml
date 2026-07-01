@@ -1,0 +1,56 @@
+mllm_id: /media/raid/workspace/xiahongyu/.cache/hub/models--google--gemma-2-2b-it/snapshots/299a8560bedf22ed1c72a8a11e7dce4a7f9f51f8
+diffusion_model_id: /media/raid/workspace/xiahongyu/.cache/hub/models--Efficient-Large-Model--Sana_1600M_512px_diffusers/snapshots/e58e81ec2dc4faf305122872313884df3afeffa8
+vae_id: /media/raid/workspace/xiahongyu/.cache/hub/models--Efficient-Large-Model--Sana_1600M_512px_diffusers/snapshots/e58e81ec2dc4faf305122872313884df3afeffa8
+noise_scheduler_id: /media/raid/workspace/xiahongyu/.cache/hub/models--Efficient-Large-Model--Sana_1600M_512px_diffusers/snapshots/e58e81ec2dc4faf305122872313884df3afeffa8
+scheduler_id: /media/raid/workspace/xiahongyu/.cache/hub/models--Efficient-Large-Model--Sana_1600M_512px_diffusers/snapshots/e58e81ec2dc4faf305122872313884df3afeffa8
+vae_downsample_f: 32
+in_channels: 32
+system_prompt: You are a robot and should focus on your actions. Generate a new image
+  that meets the user's instruction while maintaining consistency with the original
+  input where appropriate.
+_gradient_checkpointing: true
+modules_to_freeze:
+- vae
+- mllm_backbone
+data_path: datasets/empty_data_root
+camera_key: observation.images.cam_high
+target_image_size:
+- 480
+- 640
+filtered_episodes_path: ''
+cot_json_path: ''
+subtask_data_path: ''
+custom_data_path: datasets/food_custom/foreact_food_prompt_main_camera_videos
+balance_datasets: false
+target_frame_offset: 60
+source_frame_stride: 1
+min_source_frame_index: 0
+clamp_target_frame_to_last: false
+trajectory_motion_filter: false
+trajectory_key: observation.state
+trajectory_motion_start_threshold: 0.05
+trajectory_motion_start_padding: 0
+min_trajectory_delta: 0.0
+per_device_train_batch_size: 16
+gradient_accumulation_steps: 1
+learning_rate: 1.0e-05
+weight_decay: 0.05
+max_grad_norm: 0.5
+lr_scheduler_type: constant_with_warmup
+warmup_steps: 0
+num_train_epochs: 50.0
+save_strategy: 'no'
+save_total_limit: 1
+save_final_checkpoint: true
+logging_steps: 5
+dataloader_num_workers: 1
+dataloader_persistent_workers: false
+dataloader_pin_memory: true
+bf16: true
+tf32: true
+deepspeed: configs/zero1.json
+output_dir: ./checkpoints
+overwrite_output_dir: false
+resume_from_checkpoint: ./checkpoints/F-exp32-food-binary_motion_delta005_s1_t2s_bs16x8_e5/checkpoint-3330
+run_name: F-exp36-food_custom_main_camera_food_prompt_from_F-exp32_e50
+report_to: none

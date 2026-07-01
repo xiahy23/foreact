@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run all banana-trained ForeAct checkpoints on aloha_banana_fix and write an HTML report."""
+"""Run Aloha ForeAct checkpoints on sampled future-frame pairs and write an HTML report."""
 
 from __future__ import annotations
 
@@ -84,15 +84,24 @@ def infer_group(config_path: Path, cfg: dict[str, Any]) -> str:
     joined = " ".join([name, data_path, run_name])
     if "aloha-banana" in joined or "aloha_banana" in joined:
         return "banana"
+    if "aloha-cube" in joined or "aloha_cube" in joined:
+        return "cube"
     if "aloha-mixed" in joined or "mixed" in joined:
         return "mixed"
     return "other"
 
 
-def discover_checkpoints(config_dir: Path, checkpoints_dir: Path, include_mixed: bool) -> tuple[list[CheckpointInfo], list[dict[str, str]]]:
+def discover_checkpoints(
+    config_dir: Path,
+    checkpoints_dir: Path,
+    include_mixed: bool,
+    checkpoint_groups: list[str] | None = None,
+) -> tuple[list[CheckpointInfo], list[dict[str, str]]]:
     found: list[CheckpointInfo] = []
     skipped: list[dict[str, str]] = []
-    accepted_groups = {"banana", "mixed"} if include_mixed else {"banana"}
+    accepted_groups = set(checkpoint_groups or [])
+    if not accepted_groups:
+        accepted_groups = {"banana", "mixed"} if include_mixed else {"banana"}
 
     for config_path in sorted(config_dir.glob("F-exp*-aloha*.yaml")):
         with config_path.open("r", encoding="utf-8") as f:
@@ -124,7 +133,8 @@ def discover_checkpoints(config_dir: Path, checkpoints_dir: Path, include_mixed:
             )
         )
 
-    found.sort(key=lambda c: (0 if c.group == "banana" else 1, c.name))
+    group_order = {"banana": 0, "cube": 1, "mixed": 2}
+    found.sort(key=lambda c: (group_order.get(c.group, 99), c.name))
     return found, skipped
 
 
@@ -146,6 +156,31 @@ def choose_evenly(items: list[int], count: int) -> list[int]:
     return sorted(chosen[:count])
 
 
+def parse_int_list(raw: str) -> list[int]:
+    if not raw:
+        return []
+    values: list[int] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" in part:
+            chunks = [int(x) for x in part.split(":")]
+            if len(chunks) == 2:
+                start, stop = chunks
+                step = 1
+            elif len(chunks) == 3:
+                start, stop, step = chunks
+            else:
+                raise ValueError(f"Bad integer range: {part}")
+            if step == 0:
+                raise ValueError(f"Range step cannot be zero: {part}")
+            values.extend(range(start, stop, step))
+        else:
+            values.append(int(part))
+    return sorted(dict.fromkeys(values))
+
+
 def select_samples(dataset: ImagePairDataset, samples_per_episode: int) -> list[int]:
     by_episode_pos: dict[int, list[int]] = {}
     for dataset_index, item in enumerate(dataset._index):
@@ -156,6 +191,46 @@ def select_samples(dataset: ImagePairDataset, samples_per_episode: int) -> list[
     for episode_pos in range(len(dataset._episodes)):
         candidates = by_episode_pos.get(episode_pos, [])
         selected.extend(choose_evenly(candidates, samples_per_episode))
+    return selected
+
+
+def select_fixed_source_frame_samples(
+    dataset: ImagePairDataset,
+    source_frames: list[int],
+    episode_indices: list[int],
+    max_episodes: int,
+) -> list[int]:
+    if not source_frames:
+        return []
+
+    wanted_source_frames = set(source_frames)
+    wanted_episodes = set(episode_indices)
+    by_episode: dict[int, dict[int, int]] = {}
+    for dataset_index, item in enumerate(dataset._index):
+        episode_pos, source_frame, _target_frame, _caption = item
+        ep = dataset._episodes[episode_pos]
+        episode_index = int(ep["episode_index"])
+        if wanted_episodes and episode_index not in wanted_episodes:
+            continue
+        if int(source_frame) not in wanted_source_frames:
+            continue
+        by_episode.setdefault(episode_index, {})[int(source_frame)] = dataset_index
+
+    episode_order = [
+        int(ep["episode_index"])
+        for ep in dataset._episodes
+        if int(ep["episode_index"]) in by_episode
+    ]
+    if max_episodes > 0:
+        episode_order = choose_evenly(episode_order, max_episodes)
+
+    selected: list[int] = []
+    for episode_index in episode_order:
+        per_frame = by_episode[episode_index]
+        for source_frame in source_frames:
+            dataset_index = per_frame.get(source_frame)
+            if dataset_index is not None:
+                selected.append(dataset_index)
     return selected
 
 
@@ -292,6 +367,7 @@ def write_report(
     checkpoints: list[CheckpointInfo],
     checkpoint_results: dict[str, dict[str, Any]],
     skipped: list[dict[str, str]],
+    report_title: str,
 ) -> None:
     report_path.parent.mkdir(parents=True, exist_ok=True)
     sample_rows = []
@@ -340,12 +416,13 @@ def write_report(
             "</tr>"
         )
 
+    html_title = html.escape(report_title)
     html_text = f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ForeAct aloha_banana_fix report</title>
+<title>{html_title}</title>
 <style>
 :root {{
   color-scheme: light;
@@ -408,7 +485,7 @@ img {{
 </head>
 <body>
 <header>
-  <h1>ForeAct aloha_banana_fix future-frame report</h1>
+  <h1>{html_title}</h1>
   <p>Dataset: {html.escape(str(dataset_root))}</p>
   <p>Camera: {html.escape(camera_key)} | Target offset: {target_frame_offset} frames | Samples: {len(samples)} from {len({s.episode_index for s in samples})} videos | Checkpoints: {len(checkpoints)}</p>
   <p>Manifest: {html.escape(rel(manifest_path, output_dir))}</p>
@@ -429,7 +506,7 @@ img {{
       <table>
         <thead>
           <tr>
-            <th>Sample</th><th>Source</th><th>GT +30</th>{''.join(f'<th>{html.escape(c.name)}</th>' for c in checkpoints)}
+            <th>Sample</th><th>Source</th><th>GT +{target_frame_offset}</th>{''.join(f'<th>{html.escape(c.name)}</th>' for c in checkpoints)}
           </tr>
         </thead>
         <tbody>{''.join(sample_rows)}</tbody>
@@ -511,8 +588,32 @@ def main() -> int:
     parser.add_argument("--source-frame-stride", type=int, default=30)
     parser.add_argument("--samples-per-episode", type=int, default=2)
     parser.add_argument("--include-mixed", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--checkpoint-group",
+        action="append",
+        default=[],
+        choices=["banana", "cube", "mixed", "other"],
+        help="Checkpoint group filter. Can be repeated. Defaults to banana plus mixed when --include-mixed is true.",
+    )
     parser.add_argument("--checkpoint-name", action="append", default=[], help="Optional run name filter. Can be repeated.")
     parser.add_argument("--max-checkpoints", type=int, default=0)
+    parser.add_argument(
+        "--sample-source-frames",
+        default="",
+        help="Comma-separated source frames or ranges, e.g. 0,30,60. When set, samples these exact source frames per episode.",
+    )
+    parser.add_argument(
+        "--episode-indices",
+        default="",
+        help="Optional comma-separated episode indices or ranges to keep, e.g. 0,3,10:20.",
+    )
+    parser.add_argument(
+        "--max-episodes",
+        type=int,
+        default=0,
+        help="Optional cap on episodes after filtering; episodes are spread evenly across the dataset.",
+    )
+    parser.add_argument("--report-title", default="ForeAct future-frame report")
     parser.add_argument("--seed", type=int, default=20260502)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--num-inference-steps", type=int, default=8)
@@ -534,7 +635,15 @@ def main() -> int:
     manifest_path = output_dir / "manifest.json"
     report_path = output_dir / "index.html"
 
-    checkpoints, skipped = discover_checkpoints(config_dir, checkpoints_dir, args.include_mixed)
+    sample_source_frames = parse_int_list(args.sample_source_frames)
+    episode_indices = parse_int_list(args.episode_indices)
+
+    checkpoints, skipped = discover_checkpoints(
+        config_dir,
+        checkpoints_dir,
+        args.include_mixed,
+        args.checkpoint_group,
+    )
     if args.checkpoint_name:
         allowed = set(args.checkpoint_name)
         skipped.extend(
@@ -551,7 +660,7 @@ def main() -> int:
         checkpoints = checkpoints[: args.max_checkpoints]
 
     if not checkpoints:
-        raise RuntimeError("No banana-trained checkpoints found.")
+        raise RuntimeError("No matching Aloha checkpoints found.")
 
     dataset = ImagePairDataset(
         root=dataset_root,
@@ -559,7 +668,15 @@ def main() -> int:
         target_frame_offset=args.target_frame_offset,
         source_frame_stride=args.source_frame_stride,
     )
-    selected_indices = select_samples(dataset, args.samples_per_episode)
+    if sample_source_frames:
+        selected_indices = select_fixed_source_frame_samples(
+            dataset=dataset,
+            source_frames=sample_source_frames,
+            episode_indices=episode_indices,
+            max_episodes=args.max_episodes,
+        )
+    else:
+        selected_indices = select_samples(dataset, args.samples_per_episode)
     if not selected_indices:
         raise RuntimeError("No valid source/target frame pairs found.")
 
@@ -597,6 +714,7 @@ def main() -> int:
                 checkpoints=checkpoints,
                 checkpoint_results=checkpoint_results,
                 skipped=skipped,
+                report_title=args.report_title,
             )
     else:
         print("[dry-run] inference skipped")
@@ -613,6 +731,7 @@ def main() -> int:
         checkpoints=checkpoints,
         checkpoint_results=checkpoint_results,
         skipped=skipped,
+        report_title=args.report_title,
     )
     return 0
 
